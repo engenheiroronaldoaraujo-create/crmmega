@@ -1,0 +1,28 @@
+# Dependências
+node_modules/
+
+# Builds
+dist/
+dist-ssr/
+
+# Ambiente / credenciais locais (nunca commitar)
+.env
+.env.*
+.vercel/
+.supabase/
+
+# Testes
+playwright-report/
+test-results/
+coverage/
+
+# Sistema / editor
+.DS_Store
+*.local
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*

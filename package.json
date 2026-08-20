@@ -1,0 +1,45 @@
+{
+  "name": "mega-crm",
+  "version": "1.0.0",
+  "description": "Mega CRM: self-hosted WhatsApp CRM with AI-assisted templates, mass campaigns, real-time inbox with AI/human handoff, sales funnel and RAG knowledge base.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "validate:sql": "node validate-sql.mjs",
+    "db:push": "node scripts/push-migrations.mjs",
+    "functions:deploy": "node scripts/deploy-functions.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "libphonenumber-js": "^1.12.41",
+    "lucide-react": "^0.460.0",
+    "papaparse": "^5.5.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^3.8.1",
+    "sonner": "^1.7.0",
+    "tailwind-merge": "^2.5.4",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^22.9.0",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "libpg-query": "^17.7.3",
+    "supabase": "^2.93.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.11"
+  }
+}
