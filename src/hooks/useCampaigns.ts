@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getSupabase } from '@/lib/supabase';
+import { getSupabase, getSupabaseCredentials } from '@/lib/supabase';
 import { useAppUser } from '@/app/providers/AppUserProvider';
 import type { AudienceFilter, Campaign, VariableSource } from '@/types/campaigns';
 import type { Contact } from '@/types/db';
@@ -242,10 +242,12 @@ export function useCampaigns(): UseCampaignsResult {
 
   const debugDispatch = async (): Promise<Record<string, unknown>> => {
     const supabase = getSupabase();
+    const creds = getSupabaseCredentials();
+    if (!creds?.url) throw new Error('Supabase não configurado');
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error('Sem sessão');
     const res = await fetch(
-      `${supabase.supabaseUrl}/functions/v1/dispatch-campaign`,
+      `${creds.url}/functions/v1/dispatch-campaign`,
       {
         method: 'POST',
         headers: {
