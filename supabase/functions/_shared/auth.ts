@@ -83,35 +83,38 @@ export async function requireSuperAdmin(req: Request): Promise<Caller> {
 }
 
 // Gate para funções acionadas por pg_cron / triggers pg_net, que NÃO carregam
-// um JWT de usuário — elas se autenticam com a service role key (seedada nas
-// Vault entries `whatsapp_hub_service_role_key`).
+// um JWT de usuário — elas se autenticam com a service role key (seedada na
+// Vault entry `whatsapp_hub_service_role_key`).
 //
-// Aceita o token se ele bater com (a) o SUPABASE_SERVICE_ROLE_KEY injetado na
-// função OU (b) o segredo da Vault usado pelo cron — validado server-side pela
-// RPC verify_service_token. O fallback existe porque o valor da Vault (definido
-// no setup) pode divergir do SUPABASE_SERVICE_ROLE_KEY injetado quando o projeto
-// usa o novo formato de API keys; sem isso, todo invoke pg_net dá 403.
+// Validação primária: RPC whatsapp_hub.verify_service_token(token) — compara
+// contra o PRÓPRIO segredo da Vault, eliminando divergência de formato entre
+// Vault e SUPABASE_SERVICE_ROLE_KEY injetado.
+//
+// Fallback: JWT de admin autenticado (para debug manual via frontend).
 export async function requireServiceRole(req: Request): Promise<void> {
-  const expected = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
   const authHeader = req.headers.get('Authorization') ?? '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
   if (!token) throw new AuthError('Forbidden', 403);
-  if (expected && constantTimeEqual(token, expected)) return;
+
+  // 1. Valida contra o segredo da Vault (fonte única do cron).
   try {
     const { data, error } = await getAdminClient().rpc('verify_service_token', { p_token: token });
     if (!error && data === true) return;
   } catch {
+    // cai no fallback abaixo
+  }
+
+  // 2. Fallback: JWT de admin autenticado (para debug manual).
+  try {
+    const admin = getAuthAdminClient();
+    const { data, error } = await admin.auth.getUser(token);
+    if (!error && data.user) {
+      const meta = (data.user.app_metadata ?? {}) as Record<string, unknown>;
+      if (meta.role === 'admin' || meta.is_super_admin === true) return;
+    }
+  } catch {
     // cai no throw abaixo
   }
-  throw new AuthError('Forbidden', 403);
-}
 
-function constantTimeEqual(a: string, b: string): boolean {
-  const enc = new TextEncoder();
-  const ba = enc.encode(a);
-  const bb = enc.encode(b);
-  if (ba.length !== bb.length) return false;
-  let diff = 0;
-  for (let i = 0; i < ba.length; i++) diff |= ba[i] ^ bb[i];
-  return diff === 0;
+  throw new AuthError('Forbidden', 403);
 }

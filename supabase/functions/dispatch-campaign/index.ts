@@ -432,6 +432,7 @@ Deno.serve(async (req) => {
       .from('templates')
       .select('id, name, language, body')
       .eq('id', id)
+      .eq('status', 'approved')
       .maybeSingle();
     const row = tpl ? (tpl as TemplateRow) : null;
     templateCache.set(id, row);
@@ -564,8 +565,8 @@ Deno.serve(async (req) => {
       };
 
       if (!template) {
-        await releaseOrFail('Template nao encontrado', false);
-        errors.push(`campaign ${c.id}: template ${templateId} nao encontrado`);
+        await releaseOrFail('Template não aprovado pela Meta ou não encontrado', false);
+        errors.push(`campaign ${c.id}: template ${templateId} não aprovado ou não encontrado`);
         continue;
       }
 

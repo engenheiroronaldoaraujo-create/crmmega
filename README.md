@@ -49,6 +49,54 @@ no Deno); `tenant-credentials.ts` e apenas um wrapper tipado sobre ele.
 Nao delete `CRYPTO_KEY` da Vercel. Sem ela, os valores criptografados em
 `public.app_settings` nao podem ser recuperados.
 
+## Troubleshooting: campanhas presas em "Enviando"
+
+O pg_cron invoca o Edge Function `dispatch-campaign` a cada 30 segundos. Se
+campanhas ficam presas em "Enviando" sem enviar, verifique:
+
+### 1. Vault secret `whatsapp_hub_service_role_key`
+
+O cron autentica com o segredo da Vault. Se nao existir, toda invocacao
+retorna 403. Verificar no SQL Editor do Supabase:
+
+```sql
+SELECT name FROM vault.decrypted_secrets
+ WHERE name = 'whatsapp_hub_service_role_key';
+```
+
+Se nao retornar nada, insira manualmente (substitua `<SERVICE_ROLE_KEY>` pela
+chave real do projeto — em Settings > API > service_role):
+
+```sql
+SELECT vault.create_secret(
+  '<SERVICE_ROLE_KEY>',
+  'whatsapp_hub_service_role_key',
+  'Service role JWT used by pg_cron to authenticate to Edge Functions'
+);
+```
+
+### 2. Credenciais Zernio
+
+O dispatcher precisa de tres credenciais em `public.org_settings` (ou
+`public.app_settings` como fallback):
+
+- `zernio_api_key`
+- `zernio_account_id`
+- `zernio_profile_id`
+
+Configurar em `/settings/credentials` (Canais).
+
+### 3. Template aprovado
+
+O template da campanha precisa ter `status = 'approved'` no banco. Templates
+com status `pending` ou `rejected` fazem os contatos serem marcados como
+`failed` com a mensagem "Template nao aprovado pela Meta ou nao encontrado".
+
+### 4. Botao "Testar dispatch"
+
+Na pagina de Campanhas, o botao "Testar dispatch" executa o dispatcher
+manualmente e mostra o JSON de resultado com erros detalhados.
+
 ## Desenvolvimento Local
 
 ```bash
