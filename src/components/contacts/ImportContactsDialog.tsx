@@ -70,7 +70,7 @@ export function ImportContactsDialog({
   onClose,
   onDone,
 }: ImportContactsDialogProps) {
-  const { userId } = useAppUser();
+  const { userId, orgId } = useAppUser();
   const [step, setStep] = useState<'upload' | 'map' | 'running' | 'done'>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<string[][]>([]);
@@ -125,7 +125,7 @@ export function ImportContactsDialog({
   const phoneColumn = mapping.findIndex((m) => m.kind === 'phone');
 
   const runImport = async () => {
-    if (!userId) return;
+    if (!userId || !orgId) return;
     if (phoneColumn === -1) {
       toast.error('Mapeie ao menos uma coluna para "Telefone".');
       return;
@@ -146,6 +146,7 @@ export function ImportContactsDialog({
 
     const seen = new Set<string>();
     const pending: Array<{
+      org_id: string;
       phone: string;
       name: string | null;
       email: string | null;
@@ -177,6 +178,7 @@ export function ImportContactsDialog({
       }
 
       pending.push({
+        org_id: orgId,
         phone: parsed.e164,
         name: nameIdx >= 0 ? (r[nameIdx] || null) : null,
         email: emailIdx >= 0 ? (r[emailIdx] || null) : null,
@@ -184,13 +186,13 @@ export function ImportContactsDialog({
       });
     }
 
-    // Chunked upsert — onConflict uses the UNIQUE(org_id, phone) constraint.
+    // Chunked upsert — onConflict columns match the UNIQUE(org_id, phone) constraint.
     let imported = 0;
     for (let i = 0; i < pending.length; i += CHUNK_SIZE) {
       const chunk = pending.slice(i, i + CHUNK_SIZE);
       const { error } = await supabase
         .from('contacts')
-        .upsert(chunk, { onConflict: 'contacts_org_phone_key' });
+        .upsert(chunk, { onConflict: 'org_id,phone' });
       if (error) {
         errors.push({ row: -1, reason: `batch ${i / CHUNK_SIZE + 1}: ${error.message}` });
       } else {
