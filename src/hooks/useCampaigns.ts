@@ -220,7 +220,7 @@ export function useCampaigns(): UseCampaignsResult {
     const supabase = getSupabase();
     const { error: err } = await supabase
       .from('campaigns')
-      .update({ status: 'sending' })
+      .update({ status: 'sending', consecutive_errors: 0, last_error: null })
       .eq('id', id);
     if (err) {
       setError(err.message);

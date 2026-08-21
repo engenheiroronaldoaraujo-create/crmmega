@@ -84,6 +84,11 @@ export async function encryptValue(plaintext: string): Promise<string> {
 // Credenciais são POR ORGANIZAÇÃO (public.org_settings). O orgId vem do JWT do
 // caller, da linha alvo (conversa/campanha) ou da URL do webhook — nunca é
 // implícito.
+//
+// Fallback legado: se a credencial não existir em org_settings, verifica
+// app_settings (tabela global singleton). Isso cobre instalações que passaram
+// pelo wizard /setup antes da migração multi-tenant e ainda não reconfiguraram
+// as credenciais por org.
 export async function getCredential(
   orgId: string,
   key: string,
@@ -93,14 +98,32 @@ export async function getCredential(
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
+
+  // 1. Tenta org_settings (por organização).
+  const { data: orgData, error: orgErr } = await supabase
     .from('org_settings')
     .select('value_encrypted')
     .eq('org_id', orgId)
     .eq('key', key)
     .maybeSingle();
-  if (error) throw error;
-  const value = data?.value_encrypted ? await decryptValue(data.value_encrypted) : null;
+  if (orgErr) throw orgErr;
+
+  let value: string | null = null;
+  if (orgData?.value_encrypted) {
+    value = await decryptValue(orgData.value_encrypted);
+  } else {
+    // 2. Fallback: app_settings (legado global).
+    const { data: appData, error: appErr } = await supabase
+      .from('app_settings')
+      .select('value_encrypted')
+      .eq('key', key)
+      .maybeSingle();
+    if (appErr) throw appErr;
+    if (appData?.value_encrypted) {
+      value = await decryptValue(appData.value_encrypted);
+    }
+  }
+
   cache.set(cacheKey, { value, expiresAt: Date.now() + 60_000 });
   return value;
 }

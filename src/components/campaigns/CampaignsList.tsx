@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Pause, Play, Plus, Trash2 } from 'lucide-react';
+import { Pause, Play, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCampaigns } from '@/hooks/useCampaigns';
 import { CampaignWizard } from '@/components/campaigns/CampaignWizard';
@@ -132,6 +132,12 @@ export function CampaignsList() {
                         Retomar
                       </Button>
                     )}
+                    {c.status === 'failed' && (
+                      <Button size="sm" variant="ghost" onClick={() => handleResume(c)} disabled={busy === c.id}>
+                        <Play className="h-3.5 w-3.5" />
+                        Tentar novamente
+                      </Button>
+                    )}
                     <Button size="icon" variant="ghost" onClick={() => handleDelete(c)} aria-label={`Remover ${c.name}`}>
                       <Trash2 className="h-4 w-4 text-[var(--color-error)]" />
                     </Button>
@@ -160,6 +166,16 @@ export function CampaignsList() {
                   <Metric label="Respondidas" value={c.replied} tone="success" pctOf={c.sent} />
                   <Metric label="Falhas" value={c.failed} tone="error" pctOf={c.sent} />
                 </div>
+
+                {(c.status === 'failed' || (c.consecutive_errors > 0 && c.last_error)) && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg border border-[rgba(239,68,68,0.2)] bg-[rgba(239,68,68,0.04)] px-3 py-2 text-xs">
+                    <AlertTriangle className="h-3.5 w-3.5 text-[var(--color-error)] shrink-0 mt-0.5" />
+                    <span className="text-[var(--color-text-secondary)]">
+                      {c.status === 'failed' ? 'Campanha finalizada por erros: ' : ''}
+                      {c.last_error}
+                    </span>
+                  </div>
+                )}
               </div>
             );
           })

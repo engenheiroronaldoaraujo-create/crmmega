@@ -60,6 +60,8 @@ interface CampaignRow {
   template_id: string;
   status: 'scheduled' | 'sending' | 'paused' | 'completed' | 'failed';
   variable_mapping: Record<string, VariableSource>;
+  consecutive_errors: number;
+  last_error: string | null;
 }
 
 interface TemplateRow {
@@ -386,7 +388,7 @@ Deno.serve(async (req) => {
   // 2. Campanhas em envio.
   const { data: campaigns, error: campErr } = await admin
     .from('campaigns')
-    .select('id, org_id, channel_id, name, template_id, status, variable_mapping')
+    .select('id, org_id, channel_id, name, template_id, status, variable_mapping, consecutive_errors, last_error')
     .eq('status', 'sending');
   if (campErr) return jsonResponse({ ok: false, error: campErr.message }, { status: 500 });
 
@@ -424,12 +426,6 @@ Deno.serve(async (req) => {
   const errors: string[] = [];
   const templateCache = new Map<string, TemplateRow | null>();
 
-  // Contagem de erros consecutivos por campanha (dentro deste tick).
-  // Se uma campanha falha em todos os caminhos possiveis (ctx, template,
-  // broadcast), incrementa. Se atinge MAX_CONSECUTIVE_ERRORS, vai para 'failed'.
-  const campaignErrorCounts = new Map<string, number>();
-  const campaignLastErrors = new Map<string, string>();
-
   async function getTemplate(id: string): Promise<TemplateRow | null> {
     if (templateCache.has(id)) return templateCache.get(id) ?? null;
     const { data: tpl } = await admin
@@ -456,15 +452,25 @@ Deno.serve(async (req) => {
     } catch (err) {
       const msg = `ctx: ${err instanceof Error ? err.message : 'erro'}`;
       errors.push(`campaign ${c.id}: ${msg}`);
-      campaignErrorCounts.set(c.id, (campaignErrorCounts.get(c.id) ?? 0) + 1);
-      campaignLastErrors.set(c.id, msg);
+      await admin
+        .from('campaigns')
+        .update({
+          consecutive_errors: c.consecutive_errors + 1,
+          last_error: msg,
+        })
+        .eq('id', c.id);
       continue;
     }
     if (!ctx.profileId) {
       const msg = 'profileId do Zernio ausente (necessario para broadcasts)';
       errors.push(`campaign ${c.id}: ${msg}`);
-      campaignErrorCounts.set(c.id, (campaignErrorCounts.get(c.id) ?? 0) + 1);
-      campaignLastErrors.set(c.id, msg);
+      await admin
+        .from('campaigns')
+        .update({
+          consecutive_errors: c.consecutive_errors + 1,
+          last_error: msg,
+        })
+        .eq('id', c.id);
       continue;
     }
 
@@ -476,8 +482,13 @@ Deno.serve(async (req) => {
     if (pErr) {
       const msg = `claim: ${pErr.message}`;
       errors.push(`campaign ${c.id}: ${msg}`);
-      campaignErrorCounts.set(c.id, (campaignErrorCounts.get(c.id) ?? 0) + 1);
-      campaignLastErrors.set(c.id, msg);
+      await admin
+        .from('campaigns')
+        .update({
+          consecutive_errors: c.consecutive_errors + 1,
+          last_error: msg,
+        })
+        .eq('id', c.id);
       continue;
     }
     const queue = (pending ?? []) as CampaignContactRow[];
@@ -841,19 +852,25 @@ Deno.serve(async (req) => {
     // Se atinge o limite, marca a campanha como 'failed' para nao ficar
     // presa em 'sending' para sempre.
     if (campaignSent > 0 || campaignFailed > 0) {
-      campaignErrorCounts.set(c.id, 0);
+      await admin
+        .from('campaigns')
+        .update({ consecutive_errors: 0, last_error: null })
+        .eq('id', c.id);
     } else {
-      const prev = campaignErrorCounts.get(c.id) ?? 0;
-      const lastErr = campaignLastErrors.get(c.id) ?? 'sem detalhes';
-      if (prev >= MAX_CONSECUTIVE_ERRORS - 1) {
-        console.log(JSON.stringify({ event: 'dispatch_campaign_fail_safe', campaignId: c.id, errors: prev + 1, lastErr }));
+      const newCount = c.consecutive_errors + 1;
+      const lastErr = c.last_error ?? 'sem detalhes';
+      if (newCount >= MAX_CONSECUTIVE_ERRORS) {
+        console.log(JSON.stringify({ event: 'dispatch_campaign_fail_safe', campaignId: c.id, errors: newCount, lastErr }));
         await admin
           .from('campaigns')
-          .update({ status: 'failed', completed_at: new Date().toISOString() })
+          .update({ status: 'failed', completed_at: new Date().toISOString(), consecutive_errors: newCount })
           .eq('id', c.id);
-        errors.push(`campaign ${c.id}: FAIL-SAFE ativado apos ${prev + 1} erros: ${lastErr}`);
+        errors.push(`campaign ${c.id}: FAIL-SAFE ativado apos ${newCount} erros: ${lastErr}`);
       } else {
-        campaignErrorCounts.set(c.id, prev + 1);
+        await admin
+          .from('campaigns')
+          .update({ consecutive_errors: newCount })
+          .eq('id', c.id);
       }
     }
 

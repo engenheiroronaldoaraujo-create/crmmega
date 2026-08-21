@@ -50,6 +50,8 @@ export interface Campaign {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  consecutive_errors: number;
+  last_error: string | null;
 }
 
 export interface FollowUpRule {
