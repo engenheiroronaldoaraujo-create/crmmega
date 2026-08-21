@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { requireAdmin } from '../src/lib/admin-auth.js';
+import { requireSuperAdmin } from '../src/lib/admin-auth.js';
 
 type ApiRequest = {
   method?: string;
@@ -15,7 +15,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     if (req.method !== 'POST') return res.status(405).end();
 
-    const auth = await requireAdmin(req.headers?.authorization ?? req.headers?.Authorization);
+    const auth = await requireSuperAdmin(req.headers?.authorization ?? req.headers?.Authorization);
     if (!auth.ok) {
       return res.status(auth.status).json({ success: false, message: auth.message });
     }
