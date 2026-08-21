@@ -246,19 +246,15 @@ export function useCampaigns(): UseCampaignsResult {
     if (!creds?.url) throw new Error('Supabase não configurado');
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error('Sem sessão');
-    const res = await fetch(
-      `${creds.url}/functions/v1/dispatch-campaign`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: '{}',
+    const res = await fetch('/api/debug-dispatch', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
       },
-    );
+    });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+    if (!res.ok) throw new Error(json?.message ?? `HTTP ${res.status}`);
     return json as Record<string, unknown>;
   };
 
