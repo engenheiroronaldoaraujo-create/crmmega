@@ -184,13 +184,13 @@ export function ImportContactsDialog({
       });
     }
 
-    // Chunked upsert — onConflict uses the UNIQUE(phone) constraint.
+    // Chunked upsert — onConflict uses the UNIQUE(org_id, phone) constraint.
     let imported = 0;
     for (let i = 0; i < pending.length; i += CHUNK_SIZE) {
       const chunk = pending.slice(i, i + CHUNK_SIZE);
       const { error } = await supabase
         .from('contacts')
-        .upsert(chunk, { onConflict: 'phone' });
+        .upsert(chunk, { onConflict: 'contacts_org_phone_key' });
       if (error) {
         errors.push({ row: -1, reason: `batch ${i / CHUNK_SIZE + 1}: ${error.message}` });
       } else {

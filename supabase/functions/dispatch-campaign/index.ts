@@ -46,13 +46,19 @@ import { getChannelById, loadOrgZernioContext } from '../_shared/channels.ts';
 const PER_TICK_LIMIT = 500;
 const RECIPIENTS_CHUNK = 100;
 
+// Fail-safe: quantos erros consecutivos (ticks sem progresso) antes de marcar
+// a campanha como 'failed'. Cada tick que pula uma campanha por erro incrementa
+// o contador. Quando atinge este limite, a campanha vai para 'failed' com a
+// ultima mensagem de erro registrada.
+const MAX_CONSECUTIVE_ERRORS = 10;
+
 interface CampaignRow {
   id: string;
   org_id: string;
   channel_id: string | null;
   name: string;
   template_id: string;
-  status: 'scheduled' | 'sending' | 'paused' | 'completed';
+  status: 'scheduled' | 'sending' | 'paused' | 'completed' | 'failed';
   variable_mapping: Record<string, VariableSource>;
 }
 
@@ -418,6 +424,12 @@ Deno.serve(async (req) => {
   const errors: string[] = [];
   const templateCache = new Map<string, TemplateRow | null>();
 
+  // Contagem de erros consecutivos por campanha (dentro deste tick).
+  // Se uma campanha falha em todos os caminhos possiveis (ctx, template,
+  // broadcast), incrementa. Se atinge MAX_CONSECUTIVE_ERRORS, vai para 'failed'.
+  const campaignErrorCounts = new Map<string, number>();
+  const campaignLastErrors = new Map<string, string>();
+
   async function getTemplate(id: string): Promise<TemplateRow | null> {
     if (templateCache.has(id)) return templateCache.get(id) ?? null;
     const { data: tpl } = await admin
@@ -442,11 +454,17 @@ Deno.serve(async (req) => {
     try {
       ctx = await resolveCampaignCtx(c);
     } catch (err) {
-      errors.push(`campaign ${c.id}: ${err instanceof Error ? err.message : 'ctx'}`);
+      const msg = `ctx: ${err instanceof Error ? err.message : 'erro'}`;
+      errors.push(`campaign ${c.id}: ${msg}`);
+      campaignErrorCounts.set(c.id, (campaignErrorCounts.get(c.id) ?? 0) + 1);
+      campaignLastErrors.set(c.id, msg);
       continue;
     }
     if (!ctx.profileId) {
-      errors.push(`campaign ${c.id}: profileId do Zernio ausente (necessario para broadcasts).`);
+      const msg = 'profileId do Zernio ausente (necessario para broadcasts)';
+      errors.push(`campaign ${c.id}: ${msg}`);
+      campaignErrorCounts.set(c.id, (campaignErrorCounts.get(c.id) ?? 0) + 1);
+      campaignLastErrors.set(c.id, msg);
       continue;
     }
 
@@ -456,18 +474,30 @@ Deno.serve(async (req) => {
       p_limit: PER_TICK_LIMIT,
     });
     if (pErr) {
-      errors.push(`campaign ${c.id}: ${pErr.message}`);
+      const msg = `claim: ${pErr.message}`;
+      errors.push(`campaign ${c.id}: ${msg}`);
+      campaignErrorCounts.set(c.id, (campaignErrorCounts.get(c.id) ?? 0) + 1);
+      campaignLastErrors.set(c.id, msg);
       continue;
     }
     const queue = (pending ?? []) as CampaignContactRow[];
     if (queue.length === 0) {
-      // Nada reservavel: conclui a campanha se nao ha mais nada pendente.
+      // Nada reservavel: conclui a campanha se nao ha mais nada pendente
+      // E nao ha contatos reclamados recentemente (ultimos 2 min) — evita
+      // conclusao prematura quando um tick anterior morreu no meio.
       const { count: pendingLeft } = await admin
         .from('campaign_contacts')
         .select('id', { count: 'exact', head: true })
         .eq('campaign_id', c.id)
         .eq('status', 'pending');
-      if ((pendingLeft ?? 0) === 0) {
+      const { count: recentlyClaimed } = await admin
+        .from('campaign_contacts')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', c.id)
+        .eq('status', 'pending')
+        .not('claimed_at', 'is', null)
+        .gte('claimed_at', new Date(Date.now() - 2 * 60 * 1000).toISOString());
+      if ((pendingLeft ?? 0) === 0 && (recentlyClaimed ?? 0) === 0) {
         await admin
           .from('campaigns')
           .update({ status: 'completed', completed_at: new Date().toISOString() })
@@ -804,6 +834,27 @@ Deno.serve(async (req) => {
     }
     if (lastBroadcastId) {
       await admin.from('campaigns').update({ zernio_broadcast_id: lastBroadcastId }).eq('id', c.id);
+    }
+
+    // Fail-safe: se houve progresso (envios OU falhas processadas), reseta
+    // o contador de erros. Se NAO houve progresso e houve erros, incrementa.
+    // Se atinge o limite, marca a campanha como 'failed' para nao ficar
+    // presa em 'sending' para sempre.
+    if (campaignSent > 0 || campaignFailed > 0) {
+      campaignErrorCounts.set(c.id, 0);
+    } else {
+      const prev = campaignErrorCounts.get(c.id) ?? 0;
+      const lastErr = campaignLastErrors.get(c.id) ?? 'sem detalhes';
+      if (prev >= MAX_CONSECUTIVE_ERRORS - 1) {
+        console.log(JSON.stringify({ event: 'dispatch_campaign_fail_safe', campaignId: c.id, errors: prev + 1, lastErr }));
+        await admin
+          .from('campaigns')
+          .update({ status: 'failed', completed_at: new Date().toISOString() })
+          .eq('id', c.id);
+        errors.push(`campaign ${c.id}: FAIL-SAFE ativado apos ${prev + 1} erros: ${lastErr}`);
+      } else {
+        campaignErrorCounts.set(c.id, prev + 1);
+      }
     }
 
     totalSent += campaignSent;
