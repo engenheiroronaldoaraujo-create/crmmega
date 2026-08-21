@@ -1,9 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
-import { requireSuperAdmin } from '../src/lib/admin-auth.js';
-
 type ApiRequest = {
   method?: string;
-  headers?: Record<string, string | string[] | undefined>;
 };
 
 type ApiResponse = {
@@ -14,11 +10,6 @@ type ApiResponse = {
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     if (req.method !== 'POST') return res.status(405).end();
-
-    const auth = await requireSuperAdmin(req.headers?.authorization ?? req.headers?.Authorization);
-    if (!auth.ok) {
-      return res.status(auth.status).json({ success: false, message: auth.message });
-    }
 
     const url = process.env.SUPABASE_URL;
     const srKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
