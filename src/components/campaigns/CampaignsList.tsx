@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Pause, Play, Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { Pause, Play, Plus, Trash2, AlertTriangle, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCampaigns } from '@/hooks/useCampaigns';
 import { CampaignWizard } from '@/components/campaigns/CampaignWizard';
@@ -32,9 +32,11 @@ function progressPct(c: Campaign): number {
 }
 
 export function CampaignsList() {
-  const { campaigns, loading, error, reload, pause, resume, remove } = useCampaigns();
+  const { campaigns, loading, error, reload, pause, resume, remove, debugDispatch } = useCampaigns();
   const [showWizard, setShowWizard] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [debugResult, setDebugResult] = useState<Record<string, unknown> | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
 
   const handleDelete = async (c: Campaign) => {
     if (!confirm(`Remover a campanha "${c.name}"? Todos os disparos pendentes serão descartados.`)) return;
@@ -80,10 +82,29 @@ export function CampaignsList() {
         <p className="text-sm text-[var(--color-text-secondary)]">
           {campaigns.length} campanha{campaigns.length !== 1 ? 's' : ''} · atualização em tempo real
         </p>
-        <Button onClick={() => setShowWizard(true)}>
-          <Plus className="h-4 w-4" />
-          Nova campanha
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={async () => {
+            setDebugLoading(true);
+            setDebugResult(null);
+            try {
+              const result = await debugDispatch();
+              setDebugResult(result);
+              toast.success('Dispatch executado');
+              await reload();
+            } catch (err) {
+              toast.error('Erro no dispatch', { description: err instanceof Error ? err.message : String(err) });
+            } finally {
+              setDebugLoading(false);
+            }
+          }} disabled={debugLoading}>
+            <Bug className="h-4 w-4" />
+            {debugLoading ? 'Testando...' : 'Testar dispatch'}
+          </Button>
+          <Button onClick={() => setShowWizard(true)}>
+            <Plus className="h-4 w-4" />
+            Nova campanha
+          </Button>
+        </div>
       </div>
 
       {error && <LoadErrorBanner message={error} onRetry={() => void reload()} />}
@@ -181,6 +202,18 @@ export function CampaignsList() {
           })
         )}
       </div>
+
+      {debugResult && (
+        <div className="glass-card p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-[var(--color-text-label)] uppercase tracking-wider">Resultado do dispatch</span>
+            <Button size="sm" variant="ghost" onClick={() => setDebugResult(null)}>Fechar</Button>
+          </div>
+          <pre className="text-xs text-[var(--color-text-secondary)] overflow-auto max-h-[300px] font-mono bg-black/20 rounded p-3">
+            {JSON.stringify(debugResult, null, 2)}
+          </pre>
+        </div>
+      )}
 
       <CampaignWizard open={showWizard} onClose={() => setShowWizard(false)} />
     </div>

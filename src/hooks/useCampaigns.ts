@@ -26,6 +26,7 @@ interface UseCampaignsResult {
   resume: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   previewAudience: (filter: AudienceFilter) => Promise<number>;
+  debugDispatch: () => Promise<Record<string, unknown>>;
 }
 
 async function resolveAudienceIds(filter: AudienceFilter): Promise<string[]> {
@@ -239,6 +240,26 @@ export function useCampaigns(): UseCampaignsResult {
     await reload();
   };
 
+  const debugDispatch = async (): Promise<Record<string, unknown>> => {
+    const supabase = getSupabase();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error('Sem sessão');
+    const res = await fetch(
+      `${supabase.supabaseUrl}/functions/v1/dispatch-campaign`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: '{}',
+      },
+    );
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+    return json as Record<string, unknown>;
+  };
+
   return {
     campaigns,
     loading,
@@ -249,6 +270,7 @@ export function useCampaigns(): UseCampaignsResult {
     resume,
     remove,
     previewAudience,
+    debugDispatch,
   };
 }
 
