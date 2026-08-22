@@ -14,7 +14,7 @@ import {
   YAxis,
   Legend,
 } from 'recharts';
-import { BarChart3, CheckCheck, Eye, MessageSquare, Send, Smartphone } from 'lucide-react';
+import { AlertTriangle, BarChart3, CheckCheck, Eye, MessageSquare, Send, Smartphone } from 'lucide-react';
 import { useDashboardMetrics, type DashboardPeriod } from '@/hooks/useDashboardMetrics';
 import { useNumberStatus } from '@/hooks/useNumberStatus';
 import { LoadErrorBanner } from '@/components/LoadErrorBanner';
@@ -140,31 +140,38 @@ export function DispatchMetrics() {
       )}
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
         <MetricCard
           icon={<Send className="h-4 w-4 text-[var(--accent-primary)]" />}
           label="Enviadas"
           value={totals.sent}
-          subtitle={`${totals.total_contacts.toLocaleString('pt-BR')} destinatários totais`}
+          subtitle={`${totals.total_contacts.toLocaleString('pt-BR')} destinatários`}
         />
         <MetricCard
           icon={<CheckCheck className="h-4 w-4 text-[var(--color-success)]" />}
-          label="Taxa de entrega"
-          value={`${totals.deliveryRate.toFixed(1)}%`}
-          subtitle={`${totals.delivered.toLocaleString('pt-BR')} entregues`}
+          label="Entregues"
+          value={totals.delivered}
+          subtitle={`${totals.deliveryRate.toFixed(1)}% de entrega`}
           color="success"
         />
         <MetricCard
           icon={<Eye className="h-4 w-4 text-[#A78BFA]" />}
-          label="Taxa de leitura"
-          value={`${totals.readRate.toFixed(1)}%`}
-          subtitle={`${totals.read.toLocaleString('pt-BR')} lidas`}
+          label="Lidas"
+          value={totals.read}
+          subtitle={`${totals.readRate.toFixed(1)}% de leitura`}
         />
         <MetricCard
           icon={<MessageSquare className="h-4 w-4 text-[#FBBF24]" />}
-          label="Taxa de resposta"
-          value={`${totals.replyRate.toFixed(1)}%`}
-          subtitle={`${totals.replied.toLocaleString('pt-BR')} respondidas`}
+          label="Respondidas"
+          value={totals.replied}
+          subtitle={`${totals.replyRate.toFixed(1)}% de resposta`}
+        />
+        <MetricCard
+          icon={<AlertTriangle className="h-4 w-4 text-[var(--color-error)]" />}
+          label="Falhas"
+          value={totals.failed}
+          subtitle={totals.sent > 0 ? `${((totals.failed / totals.sent) * 100).toFixed(1)}% de falha` : '—'}
+          color="error"
         />
       </div>
 
@@ -336,12 +343,14 @@ function MetricCard({
   label: string;
   value: string | number;
   subtitle: string;
-  color?: 'success' | 'primary';
+  color?: 'success' | 'primary' | 'error';
 }) {
   const valueClass =
     color === 'success'
       ? 'text-[var(--color-success)]'
-      : 'text-[var(--color-text-primary)]';
+      : color === 'error'
+        ? 'text-[var(--color-error)]'
+        : 'text-[var(--color-text-primary)]';
   return (
     <div className="glass-card p-5">
       <div className="flex items-center gap-2 text-label">
