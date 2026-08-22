@@ -28,6 +28,10 @@ const BROADCAST_LIMIT = 25;
 // dificilmente mudam de status.
 const LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000;
 
+// Contatos presos em 'sent' por mais de 48h sem que o Zernio retorne um
+// status sao marcados como 'failed' — evita contadores inflados para sempre.
+const STUCK_TIMEOUT_MS = 48 * 60 * 60 * 1000;
+
 // Funil de entrega; usado para so avancar (nunca regredir read→delivered).
 const STATUS_RANK: Record<string, number> = { sent: 1, delivered: 2, read: 3 };
 
@@ -36,6 +40,7 @@ interface ContactRow {
   campaign_id: string;
   status: 'sent' | 'delivered';
   delivered_at: string | null;
+  sent_at: string | null;
   contacts: { phone: string | null } | { phone: string | null }[] | null;
 }
 
@@ -161,7 +166,7 @@ Deno.serve(async (req) => {
 
     const { data: rows, error: rowsErr } = await admin
       .from('campaign_contacts')
-      .select('id, campaign_id, status, delivered_at, contacts(phone)')
+      .select('id, campaign_id, status, delivered_at, sent_at, contacts(phone)')
       .eq('zernio_broadcast_id', broadcastId)
       .in('status', ['sent', 'delivered']);
     if (rowsErr) {
@@ -169,11 +174,16 @@ Deno.serve(async (req) => {
       continue;
     }
 
+    let unmatchedPhones = 0;
+
     for (const row of (rows ?? []) as ContactRow[]) {
       const phone = contactPhone(row);
       if (!phone) continue;
       const rec = byPhone.get(onlyDigits(phone));
-      if (!rec) continue;
+      if (!rec) {
+        unmatchedPhones++;
+        continue;
+      }
 
       const next = mapStatus(rec.status);
       if (!next || next === 'sent') continue;
@@ -182,14 +192,19 @@ Deno.serve(async (req) => {
 
       if (next === 'failed') {
         const reason = rec.error ?? 'Broadcast recipient failed';
-        const { error } = await admin
+        // UPDATE condicional: so marca failed se o status atual ainda e sent/delivered.
+        // Isso evita double-count quando dois ticks concorrentes processam a mesma linha.
+        const { error, count } = await admin
           .from('campaign_contacts')
           .update({ status: 'failed', error_message: reason })
-          .eq('id', row.id);
+          .eq('id', row.id)
+          .in('status', ['sent', 'delivered'])
+          .select('id', { count: 'exact', head: true });
         if (error) {
           errors.push(`update ${row.id}: ${error.message}`);
           continue;
         }
+        if (!count || count === 0) continue; // ja processado por outro tick
         // Propaga para o espelho da inbox: sem isto a mensagem ficava "sent"
         // para sempre e o operador nunca via a falha nem o motivo.
         await admin
@@ -210,11 +225,19 @@ Deno.serve(async (req) => {
         patch.read_at = nowIso;
         if (!row.delivered_at) patch.delivered_at = nowIso;
       }
-      const { error } = await admin.from('campaign_contacts').update(patch).eq('id', row.id);
+      // UPDATE condicional: so avanca se o status atual ainda e anterior ao desejado.
+      // Isso evita double-count quando dois ticks concorrentes processam a mesma linha.
+      const { error, count } = await admin
+        .from('campaign_contacts')
+        .update(patch)
+        .eq('id', row.id)
+        .eq('status', row.status)
+        .select('id', { count: 'exact', head: true });
       if (error) {
         errors.push(`update ${row.id}: ${error.message}`);
         continue;
       }
+      if (!count || count === 0) continue; // ja processado por outro tick
       // Espelho da inbox acompanha o funil (o guard de rank acima garante que
       // nunca regride read→delivered).
       await admin
@@ -225,6 +248,35 @@ Deno.serve(async (req) => {
       // Se pulou direto sent→read, conta tambem o delivered para o funil fechar.
       if (next === 'read' && row.status === 'sent') await bumpCounter(row.campaign_id, 'delivered');
       updated++;
+    }
+
+    // Contatos presos em 'sent' por mais de STUCK_TIMEOUT_MS sem que o
+    // Zernio retorne um status melhor: marca como failed com timeout.
+    const stuckCutoff = new Date(Date.now() - STUCK_TIMEOUT_MS).toISOString();
+    const stuckRows = (rows ?? []).filter(
+      (r) => r.status === 'sent' && r.sent_at && r.sent_at < stuckCutoff,
+    );
+    for (const row of stuckRows) {
+      const phone = contactPhone(row);
+      if (phone && byPhone.has(onlyDigits(phone))) continue; // Zernio tem info — já processado ou em fila
+      const { count } = await admin
+        .from('campaign_contacts')
+        .update({ status: 'failed', error_message: 'Timeout: Zernio não retornou status em 48h' })
+        .eq('id', row.id)
+        .eq('status', 'sent')
+        .select('id', { count: 'exact', head: true });
+      if (count && count > 0) {
+        await admin
+          .from('messages')
+          .update({ meta_status: 'failed', error_reason: 'Timeout: Zernio não retornou status em 48h' })
+          .eq('campaign_contact_id', row.id);
+        await bumpCounter(row.campaign_id, 'failed');
+        updated++;
+      }
+    }
+
+    if (unmatchedPhones > 0) {
+      console.log(JSON.stringify({ event: 'sync_broadcast_unmatched_phones', broadcastId, count: unmatchedPhones }));
     }
   }
 

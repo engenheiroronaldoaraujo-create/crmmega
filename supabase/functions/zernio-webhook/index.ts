@@ -480,10 +480,13 @@ async function syncCampaignContactStatus(
       typeof rawError === 'string' && rawError.trim() !== ''
         ? rawError
         : str(asObject(rawError), ['message', 'description', 'title', 'error']) ?? 'Falha na entrega';
-    await admin
+    const { count } = await admin
       .from('campaign_contacts')
       .update({ status: 'failed', error_message: reason })
-      .eq('id', row.id);
+      .eq('id', row.id)
+      .in('status', ['sent', 'delivered'])
+      .select('id', { count: 'exact', head: true });
+    if (!count || count === 0) return;
     await admin.rpc('bump_campaign_counter', { p_campaign_id: row.campaign_id, p_column: 'failed', p_delta: 1 });
     return;
   }
@@ -496,7 +499,8 @@ async function syncCampaignContactStatus(
     patch.read_at = nowIso;
     if (!row.delivered_at) patch.delivered_at = nowIso;
   }
-  await admin.from('campaign_contacts').update(patch).eq('id', row.id);
+  const { count } = await admin.from('campaign_contacts').update(patch).eq('id', row.id).eq('status', row.status).select('id', { count: 'exact', head: true });
+  if (!count || count === 0) return;
   await admin.rpc('bump_campaign_counter', { p_campaign_id: row.campaign_id, p_column: status, p_delta: 1 });
   if (status === 'read' && row.status === 'sent') {
     await admin.rpc('bump_campaign_counter', { p_campaign_id: row.campaign_id, p_column: 'delivered', p_delta: 1 });
