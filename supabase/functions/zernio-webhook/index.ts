@@ -488,6 +488,7 @@ async function syncCampaignContactStatus(
       .select('id', { count: 'exact', head: true });
     if (!count || count === 0) return;
     await admin.rpc('bump_campaign_counter', { p_campaign_id: row.campaign_id, p_column: 'failed', p_delta: 1 });
+    if (row.status === 'sent') await admin.rpc('bump_campaign_counter', { p_campaign_id: row.campaign_id, p_column: 'sent', p_delta: -1 });
     return;
   }
   if (status === 'sent') return; // ja marcado no dispatch

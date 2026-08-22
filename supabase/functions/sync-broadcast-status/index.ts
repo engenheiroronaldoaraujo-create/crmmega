@@ -128,11 +128,11 @@ Deno.serve(async (req) => {
   let updated = 0;
   const errors: string[] = [];
 
-  const bumpCounter = async (campaignId: string, column: string) => {
+  const bumpCounter = async (campaignId: string, column: string, delta = 1) => {
     const { error } = await admin.rpc('bump_campaign_counter', {
       p_campaign_id: campaignId,
       p_column: column,
-      p_delta: 1,
+      p_delta: delta,
     });
     if (error) errors.push(`counter ${column}: ${error.message}`);
   };
@@ -212,6 +212,9 @@ Deno.serve(async (req) => {
           .update({ meta_status: 'failed', error_reason: reason })
           .eq('campaign_contact_id', row.id);
         await bumpCounter(row.campaign_id, 'failed');
+        // Decrementa sent quando o contato era 'sent' — evita contadores
+        // inflados (sent=88 + failed=88 para 88 contatos reais).
+        if (row.status === 'sent') await bumpCounter(row.campaign_id, 'sent', -1);
         updated++;
         continue;
       }
@@ -271,6 +274,7 @@ Deno.serve(async (req) => {
           .update({ meta_status: 'failed', error_reason: 'Timeout: Zernio não retornou status em 48h' })
           .eq('campaign_contact_id', row.id);
         await bumpCounter(row.campaign_id, 'failed');
+        await bumpCounter(row.campaign_id, 'sent', -1);
         updated++;
       }
     }
