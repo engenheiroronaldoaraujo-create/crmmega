@@ -10,7 +10,7 @@
 import { requireAdmin, AuthError } from '../_shared/auth.ts';
 import { getAdminClient } from '../_shared/supabase-admin.ts';
 import { jsonResponse, preflight } from '../_shared/cors.ts';
-import { ZernioError, listTemplates } from '../_shared/zernio.ts';
+import { ZernioError, listTemplates, type ZernioTemplate } from '../_shared/zernio.ts';
 import { listActiveChannels, loadOrgZernioContext } from '../_shared/channels.ts';
 
 function mapStatus(meta: string | null): 'approved' | 'rejected' | 'pending' {
@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
           .filter((id): id is string => Boolean(id)),
       ),
     ];
-    const byName = new Map<string, { id: string | null; name: string | null; status: string | null }>();
+    const byName = new Map<string, ZernioTemplate>();
     const fetchErrors: string[] = [];
     for (const accountId of accountIds) {
       try {
@@ -93,25 +93,37 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Importa templates da Meta que não existem localmente. Cria uma linha
-    // mínima com o nome, status e meta_template_id — o corpo (body, category,
-    // language, etc.) pode ser preenchido depois se necessário.
+    // Importa templates da Meta que não existem localmente, e preenche o body
+    // dos que existem mas estão vazios (import anterior sem dados completos).
     const localNames = new Set((locals ?? []).map((l) => l.name));
     let imported = 0;
+    let patched = 0;
     for (const [name, remote] of byName) {
-      if (localNames.has(name)) continue;
       const mapped = mapStatus(remote.status);
       const nowIso = new Date().toISOString();
+      if (localNames.has(name)) {
+        // Atualiza body se estiver vazio (import anterior incompleto).
+        const local = (locals ?? []).find((l) => l.name === name);
+        if (local && !local.body && remote.body) {
+          const patch: Record<string, unknown> = { body: remote.body };
+          if (remote.category) patch.category = remote.category.toLowerCase();
+          if (remote.language) patch.language = remote.language;
+          if (remote.headerType) patch.header_type = remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none';
+          await admin.from('templates').update(patch).eq('id', local.id);
+          patched++;
+        }
+        continue;
+      }
       const { error: insErr } = await admin.from('templates').insert({
         org_id: orgId,
         name,
-        category: 'marketing',
-        language: 'pt_BR',
+        category: (remote.category ?? 'marketing').toLowerCase(),
+        language: remote.language ?? 'pt_BR',
         status: mapped,
         meta_template_id: remote.id ?? null,
         meta_template_status: remote.status ?? null,
-        body: '',
-        header_type: 'none',
+        body: remote.body ?? '',
+        header_type: remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none',
         buttons: '[]',
         variables: '{}',
         ...(mapped === 'approved' ? { approved_at: nowIso } : {}),
@@ -119,7 +131,7 @@ Deno.serve(async (req) => {
       if (!insErr) imported++;
     }
 
-    return jsonResponse({ ok: true, checked: byName.size, updated, approved, rejected, imported, fetchErrors });
+    return jsonResponse({ ok: true, checked: byName.size, updated, approved, rejected, imported, patched, fetchErrors });
   } catch (err) {
     if (err instanceof AuthError) {
       return jsonResponse({ ok: false, error: err.message }, { status: err.status });

@@ -758,11 +758,22 @@ export async function getAdAccountSpend(input: {
 // GET /whatsapp/templates?accountId= → lista os templates da WABA direto da Meta.
 // Usado para sincronizar o status localmente (fallback ao webhook).
 // Segue paginação (skip/limit) para retornar TODOS os templates.
+export interface ZernioTemplate {
+  id: string | null;
+  name: string | null;
+  status: string | null;
+  category: string | null;
+  language: string | null;
+  body: string | null;
+  headerType: string | null;
+  headerText: string | null;
+}
+
 export async function listTemplates(
   apiKey: string,
   accountId: string,
-): Promise<Array<{ id: string | null; name: string | null; status: string | null }>> {
-  const out: Array<{ id: string | null; name: string | null; status: string | null }> = [];
+): Promise<ZernioTemplate[]> {
+  const out: ZernioTemplate[] = [];
   const limit = 100;
   let skip = 0;
 
@@ -780,10 +791,28 @@ export async function listTemplates(
           ? (res as unknown[])
           : [];
     for (const t of list as Record<string, unknown>[]) {
+      const components = Array.isArray(t.components) ? t.components : [];
+      let bodyText: string | null = null;
+      let headerType: string | null = null;
+      let headerText: string | null = null;
+      for (const comp of components as Record<string, unknown>[]) {
+        const type = String(comp.type ?? '').toUpperCase();
+        if (type === 'BODY') {
+          bodyText = pickString(comp, ['text', 'body']);
+        } else if (type === 'HEADER') {
+          headerType = pickString(comp, ['format']);
+          headerText = pickString(comp, ['text']);
+        }
+      }
       out.push({
         id: pickString(t, ['id', '_id', 'templateId']),
         name: pickString(t, ['name', 'templateName']),
         status: pickString(t, ['status', 'meta_status']),
+        category: pickString(t, ['category']),
+        language: pickString(t, ['language']),
+        body: bodyText,
+        headerType: headerType,
+        headerText: headerText,
       });
     }
     const pagination = root.pagination && typeof root.pagination === 'object'
