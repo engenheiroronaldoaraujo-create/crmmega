@@ -757,23 +757,42 @@ export async function getAdAccountSpend(input: {
 
 // GET /whatsapp/templates?accountId= → lista os templates da WABA direto da Meta.
 // Usado para sincronizar o status localmente (fallback ao webhook).
+// Segue paginação (skip/limit) para retornar TODOS os templates.
 export async function listTemplates(
   apiKey: string,
   accountId: string,
 ): Promise<Array<{ id: string | null; name: string | null; status: string | null }>> {
-  const res = await zfetch(
-    apiKey,
-    `/whatsapp/templates?accountId=${encodeURIComponent(accountId)}`,
-  );
-  const root = (res ?? {}) as Record<string, unknown>;
-  const list = Array.isArray(root.templates)
-    ? root.templates
-    : Array.isArray(root.data)
-      ? root.data
-      : [];
-  return (list as Record<string, unknown>[]).map((t) => ({
-    id: pickString(t, ['id', '_id', 'templateId']),
-    name: pickString(t, ['name', 'templateName']),
-    status: pickString(t, ['status', 'meta_status']),
-  }));
+  const out: Array<{ id: string | null; name: string | null; status: string | null }> = [];
+  const limit = 100;
+  let skip = 0;
+
+  for (let page = 0; page < 50; page++) {
+    const res = await zfetch(
+      apiKey,
+      `/whatsapp/templates?accountId=${encodeURIComponent(accountId)}&limit=${limit}&skip=${skip}`,
+    );
+    const root = (res ?? {}) as Record<string, unknown>;
+    const list = Array.isArray(root.templates)
+      ? root.templates
+      : Array.isArray(root.data)
+        ? root.data
+        : Array.isArray(res)
+          ? (res as unknown[])
+          : [];
+    for (const t of list as Record<string, unknown>[]) {
+      out.push({
+        id: pickString(t, ['id', '_id', 'templateId']),
+        name: pickString(t, ['name', 'templateName']),
+        status: pickString(t, ['status', 'meta_status']),
+      });
+    }
+    const pagination = root.pagination && typeof root.pagination === 'object'
+      ? (root.pagination as Record<string, unknown>)
+      : null;
+    const hasMore = pagination ? Boolean(pagination.hasMore) : false;
+    if (!hasMore || list.length === 0) break;
+    skip += list.length;
+  }
+
+  return out;
 }

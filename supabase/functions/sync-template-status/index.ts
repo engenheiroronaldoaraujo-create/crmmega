@@ -28,7 +28,12 @@ Deno.serve(async (req) => {
     const caller = await requireAdmin(req);
     const orgId = caller.orgId;
     const admin = getAdminClient();
-    const ctx = await loadOrgZernioContext(admin, orgId);
+    let ctx;
+    try {
+      ctx = await loadOrgZernioContext(admin, orgId);
+    } catch (err) {
+      return jsonResponse({ ok: false, error: `Zernio context: ${err instanceof Error ? err.message : String(err)}` }, { status: 400 });
+    }
 
     // Lista os templates da Meta por canal Zernio da org (accountId de cada
     // número conectado + o default da org como fallback). O status é o mesmo
@@ -41,10 +46,15 @@ Deno.serve(async (req) => {
       ),
     ];
     const byName = new Map<string, { id: string | null; name: string | null; status: string | null }>();
+    const fetchErrors: string[] = [];
     for (const accountId of accountIds) {
-      const remote = await listTemplates(ctx.apiKey, accountId);
-      for (const t of remote) {
-        if (t.name) byName.set(t.name, t);
+      try {
+        const remote = await listTemplates(ctx.apiKey, accountId);
+        for (const t of remote) {
+          if (t.name) byName.set(t.name, t);
+        }
+      } catch (err) {
+        fetchErrors.push(`account ${accountId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -109,7 +119,7 @@ Deno.serve(async (req) => {
       if (!insErr) imported++;
     }
 
-    return jsonResponse({ ok: true, checked: byName.size, updated, approved, rejected, imported });
+    return jsonResponse({ ok: true, checked: byName.size, updated, approved, rejected, imported, fetchErrors });
   } catch (err) {
     if (err instanceof AuthError) {
       return jsonResponse({ ok: false, error: err.message }, { status: err.status });

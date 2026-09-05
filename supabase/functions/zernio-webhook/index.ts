@@ -532,10 +532,10 @@ async function handleTemplateStatus(
 
   let query = admin.from('templates').update(update).eq('org_id', orgId);
   query = metaTemplateId ? query.eq('meta_template_id', metaTemplateId) : query.eq('name', name as string);
-  const { count } = await query.select('id', { count: 'exact', head: true });
+  const { data: updatedRows } = await query.select('id');
 
   // Se nenhum template local foi afetado, importa um registro mínimo da Meta.
-  if (!count || count === 0) {
+  if (!updatedRows || updatedRows.length === 0) {
     if (!name) return;
     await admin.from('templates').insert({
       org_id: orgId,

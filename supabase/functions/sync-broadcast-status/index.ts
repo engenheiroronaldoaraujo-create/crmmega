@@ -194,17 +194,17 @@ Deno.serve(async (req) => {
         const reason = rec.error ?? 'Broadcast recipient failed';
         // UPDATE condicional: so marca failed se o status atual ainda e sent/delivered.
         // Isso evita double-count quando dois ticks concorrentes processam a mesma linha.
-        const { error, count } = await admin
+        const { error, data: updatedRows } = await admin
           .from('campaign_contacts')
           .update({ status: 'failed', error_message: reason })
           .eq('id', row.id)
           .in('status', ['sent', 'delivered'])
-          .select('id', { count: 'exact', head: true });
+          .select('id');
         if (error) {
           errors.push(`update ${row.id}: ${error.message}`);
           continue;
         }
-        if (!count || count === 0) continue; // ja processado por outro tick
+        if (!updatedRows || updatedRows.length === 0) continue; // ja processado por outro tick
         // Propaga para o espelho da inbox: sem isto a mensagem ficava "sent"
         // para sempre e o operador nunca via a falha nem o motivo.
         await admin
@@ -230,17 +230,17 @@ Deno.serve(async (req) => {
       }
       // UPDATE condicional: so avanca se o status atual ainda e anterior ao desejado.
       // Isso evita double-count quando dois ticks concorrentes processam a mesma linha.
-      const { error, count } = await admin
+      const { error, data: updatedRows } = await admin
         .from('campaign_contacts')
         .update(patch)
         .eq('id', row.id)
         .eq('status', row.status)
-        .select('id', { count: 'exact', head: true });
+        .select('id');
       if (error) {
         errors.push(`update ${row.id}: ${error.message}`);
         continue;
       }
-      if (!count || count === 0) continue; // ja processado por outro tick
+      if (!updatedRows || updatedRows.length === 0) continue; // ja processado por outro tick
       // Espelho da inbox acompanha o funil (o guard de rank acima garante que
       // nunca regride read→delivered).
       await admin
