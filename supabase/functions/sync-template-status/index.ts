@@ -20,6 +20,20 @@ function mapStatus(meta: string | null): 'approved' | 'rejected' | 'pending' {
   return 'pending';
 }
 
+// Converte variáveis nomeadas da Meta ({{nome}}, {{produto}}) para
+// numeradas ({{1}}, {{2}}) — o sistema interno usa numeração.
+function normalizeBodyVariables(body: string): string {
+  const seen = new Map<string, string>();
+  let counter = 1;
+  return body.replace(/\{\{\s*([a-zA-Z_]\w*)\s*\}\}/g, (_match, varName: string) => {
+    if (!seen.has(varName)) {
+      seen.set(varName, `{{${counter}}}`);
+      counter++;
+    }
+    return seen.get(varName)!;
+  });
+}
+
 Deno.serve(async (req) => {
   const pre = preflight(req);
   if (pre) return pre;
@@ -64,7 +78,7 @@ Deno.serve(async (req) => {
     // templates DA ORG do caller.
     const { data: locals, error } = await admin
       .from('templates')
-      .select('id, name, status')
+      .select('id, name, status, body')
       .eq('org_id', orgId);
     if (error) return jsonResponse({ ok: false, error: error.message }, { status: 500 });
 
@@ -102,15 +116,20 @@ Deno.serve(async (req) => {
       const mapped = mapStatus(remote.status);
       const nowIso = new Date().toISOString();
       if (localNames.has(name)) {
-        // Atualiza body se estiver vazio (import anterior incompleto).
         const local = (locals ?? []).find((l) => l.name === name);
-        if (local && !local.body && remote.body) {
-          const patch: Record<string, unknown> = { body: remote.body };
-          if (remote.category) patch.category = remote.category.toLowerCase();
-          if (remote.language) patch.language = remote.language;
-          if (remote.headerType) patch.header_type = remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none';
-          await admin.from('templates').update(patch).eq('id', local.id);
-          patched++;
+        if (local && remote.body) {
+          const hasNamedVars = /\{\{\s*[a-zA-Z_]\w*\s*\}\}/.test(local.body) && !/\{\{\s*\d+\s*\}\}/.test(local.body);
+          if (!local.body || hasNamedVars) {
+            const normalized = normalizeBodyVariables(remote.body);
+            if (normalized !== local.body) {
+              const patch: Record<string, unknown> = { body: normalized };
+              if (remote.category) patch.category = remote.category.toLowerCase();
+              if (remote.language) patch.language = remote.language;
+              if (remote.headerType) patch.header_type = remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none';
+              await admin.from('templates').update(patch).eq('id', local.id);
+              patched++;
+            }
+          }
         }
         continue;
       }
@@ -122,7 +141,7 @@ Deno.serve(async (req) => {
         status: mapped,
         meta_template_id: remote.id ?? null,
         meta_template_status: remote.status ?? null,
-        body: remote.body ?? '',
+        body: remote.body ? normalizeBodyVariables(remote.body) : '',
         header_type: remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none',
         buttons: '[]',
         variables: '{}',
