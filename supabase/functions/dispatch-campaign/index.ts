@@ -84,12 +84,14 @@ type VariableSource =
   | { source: 'custom_field'; field: string }
   | { source: 'deal_field'; field: 'title' | 'products' | 'value' | 'last_purchase_at'; fallback?: string };
 
-// Variáveis de negócio têm valor diferente por destinatário e o variableMapping
-// do broadcast do Zernio só resolve nome/custom — campanhas com deal_field vão
-// pelo caminho DIRETO (template 1:1 por destinatário, como os follow-ups).
-function usesDealFields(mapping: Record<string, VariableSource> | null, varCount: number): boolean {
+// Variáveis de negócio (deal_field) ou de contato (contact_field) têm valor
+// diferente por destinatário — o broadcast do Zernio não resolve { field: 'name' }
+// para contatos já existentes sem nome. Campanhas com essas variáveis vão pelo
+// caminho DIRETO (template 1:1 por destinatário, como os follow-ups).
+function usesPerContactFields(mapping: Record<string, VariableSource> | null, varCount: number): boolean {
   for (let i = 1; i <= varCount; i++) {
-    if (mapping?.[String(i)]?.source === 'deal_field') return true;
+    const src = mapping?.[String(i)];
+    if (src?.source === 'deal_field' || src?.source === 'contact_field') return true;
   }
   return false;
 }
@@ -572,7 +574,7 @@ Deno.serve(async (req) => {
 
       // ---- Caminho DIRETO (1:1) — variaveis de negocio por destinatario ----
       const directVarCount = countVariables(template.body);
-      if (usesDealFields(c.variable_mapping, directVarCount)) {
+      if (usesPerContactFields(c.variable_mapping, directVarCount)) {
         // Teto menor por tick: devolve o excedente para o proximo tick.
         const batch = groupRows.slice(0, DIRECT_PER_TICK);
         const overflow = groupRows.slice(DIRECT_PER_TICK);
