@@ -313,6 +313,64 @@ export function isConversationNotFoundError(err: unknown): boolean {
   return msg.includes('conversation not found') || msg.includes('list conversations');
 }
 
+// Mapa de conversas 1:1 indexado por telefone (digits-only). O participantId
+// no Zernio chega SEM '+' (ex.: "5515996575288") — comparação por dígitos
+// evita miss silencioso. Uma listagem cobre todas as conversas do accountId;
+// paginado até maxPages (default 5) para não estourar o timeout do request.
+export async function mapInboxConversationsByPhone(input: {
+  apiKey: string;
+  accountId?: string;
+  maxPages?: number;
+}): Promise<Map<string, string>> {
+  const MAX_PAGES = input.maxPages ?? 5;
+  let cursor: string | undefined;
+  const out = new Map<string, string>();
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { conversations, nextCursor, hasMore } = await listInboxConversations({
+      apiKey: input.apiKey,
+      accountId: input.accountId,
+      limit: 100,
+      cursor,
+    });
+    for (const c of conversations) {
+      if (!c.participantId || !c.id) continue;
+      const digits = c.participantId.replace(/\D/g, '');
+      if (digits && !out.has(digits)) out.set(digits, c.id);
+    }
+    if (!hasMore || !nextCursor) break;
+    cursor = nextCursor;
+  }
+  return out;
+}
+
+// Garante uma conversa 1:1 no Zernio para o telefone. A CRIAÇÃO exige
+// message/attachment/template — sem nenhum, a API rejeita com
+// "Message, attachment, or template is required" (param: message). Por isso:
+// 1. Resolve pela lista (conversa já existe na maioria dos casos).
+// 2. Só se não existir, cria com uma mensagem mínima (o template real é
+//    enviado na sequência pelo caller).
+export async function ensureInboxConversation(input: {
+  apiKey: string;
+  accountId: string;
+  participantId: string;
+}): Promise<{ conversationId: string | null; created: boolean }> {
+  const digits = input.participantId.replace(/\D/g, '');
+  const map = await mapInboxConversationsByPhone({
+    apiKey: input.apiKey,
+    accountId: input.accountId,
+    maxPages: 3,
+  });
+  const existing = digits ? map.get(digits) : undefined;
+  if (existing) return { conversationId: existing, created: false };
+  const created = await createInboxConversation({
+    apiKey: input.apiKey,
+    accountId: input.accountId,
+    participantId: input.participantId,
+    message: '.',
+  });
+  return { conversationId: created.conversationId, created: true };
+}
+
 // ---------------------------------------------------------------------------
 // Broadcasts (disparo em massa)
 // ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ import { getAdminClient } from '../_shared/supabase-admin.ts';
 import { jsonResponse, preflight } from '../_shared/cors.ts';
 import { requireServiceRole } from '../_shared/auth.ts';
 import {
-  createInboxConversation,
+  ensureInboxConversation,
   sendInboxTemplate,
   type ZernioContext,
 } from '../_shared/zernio.ts';
@@ -142,14 +142,16 @@ async function sendDirectFollowUp(
       : [];
 
     // Resolve/cria a conversa 1:1 no Zernio (template abre a janela de 24h).
+    // ensureInboxConversation resolve pela lista ANTES de criar — a criação
+    // exige message e falharia para conversas já existentes no Zernio.
     let zConvId = target.conv_provider === 'uazapi' ? null : target.zernio_conversation_id;
     if (!zConvId) {
-      const created = await createInboxConversation({
+      const ensured = await ensureInboxConversation({
         apiKey: zctx.apiKey,
         accountId: zctx.accountId,
         participantId: target.phone,
       });
-      zConvId = created.conversationId;
+      zConvId = ensured.conversationId;
       if (zConvId && target.conversation_id) {
         await admin.from('conversations').update({ zernio_conversation_id: zConvId }).eq('id', target.conversation_id);
       }

@@ -24,7 +24,7 @@ import { jsonResponse, preflight } from '../_shared/cors.ts';
 import { requireServiceRole } from '../_shared/auth.ts';
 import {
   ZernioError,
-  createInboxConversation,
+  ensureInboxConversation,
   sendInboxTemplate,
   type ZernioContext,
 } from '../_shared/zernio.ts';
@@ -242,7 +242,7 @@ async function processOrg(
 
       let zConvId = conv.zernio;
       if (!zConvId) {
-        const created = await createInboxConversation({
+        const created = await ensureInboxConversation({
           apiKey: ctx.apiKey, accountId: ctx.accountId, participantId: phone,
         });
         zConvId = created.conversationId;

@@ -20,7 +20,7 @@ import { getAdminClient } from '../_shared/supabase-admin.ts';
 import { jsonResponse, preflight } from '../_shared/cors.ts';
 import { requireServiceRole } from '../_shared/auth.ts';
 import { sendInboxWithResolve } from '../_shared/inbox-delivery.ts';
-import { createInboxConversation, sendInboxTemplate } from '../_shared/zernio.ts';
+import { ensureInboxConversation, sendInboxTemplate } from '../_shared/zernio.ts';
 import { loadOrgZernioContext } from '../_shared/channels.ts';
 
 type Admin = ReturnType<typeof getAdminClient>;
@@ -208,7 +208,7 @@ async function runAction(admin: Admin, deal: DealRow, action: Action, errors: st
       const ctx = await loadOrgZernioContext(admin, deal.org_id, conv?.zernio_account_id ?? null);
       let zConvId = conv?.provider === 'uazapi' ? null : conv?.zernio_conversation_id ?? null;
       if (!zConvId) {
-        const created = await createInboxConversation({ apiKey: ctx.apiKey, accountId: ctx.accountId, participantId: phone });
+        const created = await ensureInboxConversation({ apiKey: ctx.apiKey, accountId: ctx.accountId, participantId: phone });
         zConvId = created.conversationId;
         if (zConvId && conv) {
           await admin.from('conversations').update({ zernio_conversation_id: zConvId }).eq('id', conv.id);

@@ -34,6 +34,7 @@ import {
   bulkCreateContacts,
   createBroadcast,
   createInboxConversation,
+  mapInboxConversationsByPhone,
   sendBroadcast,
   sendInboxTemplate,
   type BroadcastVariableMapping,
@@ -597,6 +598,22 @@ Deno.serve(async (req) => {
           convByContact.set(row.contact_id, { id: row.id, zernio_conversation_id: row.zernio_conversation_id });
         }
 
+        // Conversas já existentes no Zernio (1 listagem cobre o lote). A
+        // CRIAÇÃO de conversa exige message — sem resolver antes, contatos com
+        // conversa Zernio já criada (inbound/broadcast anterior) falham em loop
+        // com "Message, attachment, or template is required".
+        let zernioConvByPhone = new Map<string, string>();
+        try {
+          zernioConvByPhone = await mapInboxConversationsByPhone({
+            apiKey: ctx.apiKey,
+            accountId: ctx.accountId,
+            maxPages: 5,
+          });
+        } catch {
+          // Sem a lista, cai no createInboxConversation como antes (pode falhar
+          // para contatos já conhecidos — aceitável como degradação).
+        }
+
         await withConcurrency(batch, DIRECT_CONCURRENCY, async (r) => {
           const phone = phoneById.get(r.contact_id);
           if (!phone) {
@@ -631,14 +648,23 @@ Deno.serve(async (req) => {
           }
 
           try {
-            // Conversa 1:1 no Zernio (reusa a conhecida; senao cria pelo telefone).
+            // Conversa 1:1 no Zernio: 1) id conhecido localmente; 2) conversa
+            // já existente no Zernio (lista por telefone); 3) cria — a criação
+            // exige message, então usa '.' (o template real vai na sequência).
             const localConv = convByContact.get(r.contact_id);
             let zConvId = localConv?.zernio_conversation_id ?? null;
+            if (!zConvId) {
+              zConvId = zernioConvByPhone.get(phone.replace(/\D/g, '')) ?? null;
+              if (zConvId && localConv) {
+                await admin.from('conversations').update({ zernio_conversation_id: zConvId }).eq('id', localConv.id);
+              }
+            }
             if (!zConvId) {
               const created = await createInboxConversation({
                 apiKey: ctx.apiKey,
                 accountId: ctx.accountId,
                 participantId: phone,
+                message: '.',
               });
               zConvId = created.conversationId;
               if (zConvId && localConv) {

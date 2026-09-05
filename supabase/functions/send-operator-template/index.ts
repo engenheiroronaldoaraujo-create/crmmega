@@ -11,7 +11,7 @@ import { getAdminClient } from '../_shared/supabase-admin.ts';
 import { jsonResponse, preflight } from '../_shared/cors.ts';
 import {
   ZernioError,
-  createInboxConversation,
+  ensureInboxConversation,
   sendInboxTemplate,
 } from '../_shared/zernio.ts';
 import { getSendContextForConversation } from '../_shared/channels.ts';
@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
       const { data: contactRow } = await admin.from('contacts').select('phone').eq('id', convRow.contact_id).maybeSingle();
       const phone = (contactRow as { phone?: string } | null)?.phone ?? null;
       if (!phone) return jsonResponse({ ok: false, error: 'Contato sem telefone.' }, { status: 400 });
-      const created = await createInboxConversation({ apiKey: ctx.apiKey, accountId: ctx.accountId, participantId: phone });
+      const created = await ensureInboxConversation({ apiKey: ctx.apiKey, accountId: ctx.accountId, participantId: phone });
       zConvId = created.conversationId;
       if (zConvId) {
         await admin.from('conversations').update({ zernio_conversation_id: zConvId }).eq('id', conversationId);

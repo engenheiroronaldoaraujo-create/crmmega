@@ -16,7 +16,7 @@
 
 import type { getAdminClient } from './supabase-admin.ts';
 import {
-  createInboxConversation,
+  ensureInboxConversation,
   isConversationNotFoundError,
   resolveInboxConversation,
   sendInboxMessage,
@@ -122,13 +122,13 @@ export async function sendInboxWithResolve(
       return { conversationId: summary.id, accountId: summary.accountId ?? ctx.accountId };
     }
     if (!target.phone) return null;
-    const created = await createInboxConversation({
+    const ensured = await ensureInboxConversation({
       apiKey: ctx.apiKey,
       accountId: ctx.accountId,
       participantId: target.phone,
     });
-    return created.conversationId
-      ? { conversationId: created.conversationId, accountId: ctx.accountId }
+    return ensured.conversationId
+      ? { conversationId: ensured.conversationId, accountId: ctx.accountId }
       : null;
   };
 
