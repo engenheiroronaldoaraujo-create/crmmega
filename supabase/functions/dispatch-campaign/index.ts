@@ -85,14 +85,15 @@ type VariableSource =
   | { source: 'custom_field'; field: string }
   | { source: 'deal_field'; field: 'title' | 'products' | 'value' | 'last_purchase_at'; fallback?: string };
 
-// Variáveis de negócio (deal_field) ou de contato (contact_field) têm valor
-// diferente por destinatário — o broadcast do Zernio não resolve { field: 'name' }
-// para contatos já existentes sem nome. Campanhas com essas variáveis vão pelo
-// caminho DIRETO (template 1:1 por destinatário, como os follow-ups).
-function usesPerContactFields(mapping: Record<string, VariableSource> | null, varCount: number): boolean {
+// Variáveis de negócio (deal_field) têm valor diferente por destinatário e o
+// variableMapping do broadcast do Zernio não as resolve — campanhas com
+// deal_field vão pelo caminho DIRETO (template 1:1 por destinatário). Variáveis
+// de contato (nome) PERMANECEM no broadcast: o caminho direto não alcança
+// contatos frios (a criação de conversa exige message em texto puro, que a
+// Meta rejeita como início de conversa — só template pode iniciar).
+function usesDealFields(mapping: Record<string, VariableSource> | null, varCount: number): boolean {
   for (let i = 1; i <= varCount; i++) {
-    const src = mapping?.[String(i)];
-    if (src?.source === 'deal_field' || src?.source === 'contact_field') return true;
+    if (mapping?.[String(i)]?.source === 'deal_field') return true;
   }
   return false;
 }
@@ -575,7 +576,7 @@ Deno.serve(async (req) => {
 
       // ---- Caminho DIRETO (1:1) — variaveis de negocio por destinatario ----
       const directVarCount = countVariables(template.body);
-      if (usesPerContactFields(c.variable_mapping, directVarCount)) {
+      if (usesDealFields(c.variable_mapping, directVarCount)) {
         // Teto menor por tick: devolve o excedente para o proximo tick.
         const batch = groupRows.slice(0, DIRECT_PER_TICK);
         const overflow = groupRows.slice(DIRECT_PER_TICK);
@@ -806,9 +807,12 @@ Deno.serve(async (req) => {
         // recipients, para que os auto-criados ja tenham nome (o Zernio resolve
         // { field:'name' } a partir do contato dele, nao do nosso banco).
         if (needsName) {
+          // platformIdentifier em DIGITS-ONLY: o Zernio indexa contatos assim
+          // ("5515996575288"); enviar com '+' cria contato duplicado e o
+          // broadcast resolve o nome do contato antigo (sem nome).
           const withNames = sendable.map((r) => ({
             name: effectiveNameById.get(r.contact_id) as string,
-            platformIdentifier: phoneById.get(r.contact_id) as string,
+            platformIdentifier: (phoneById.get(r.contact_id) as string).replace(/\D/g, ''),
           }));
           for (const part of chunk(withNames, 1000)) {
             await bulkCreateContacts({
