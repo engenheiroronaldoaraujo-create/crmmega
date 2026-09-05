@@ -83,7 +83,33 @@ Deno.serve(async (req) => {
       }
     }
 
-    return jsonResponse({ ok: true, checked: byName.size, updated, approved, rejected });
+    // Importa templates da Meta que não existem localmente. Cria uma linha
+    // mínima com o nome, status e meta_template_id — o corpo (body, category,
+    // language, etc.) pode ser preenchido depois se necessário.
+    const localNames = new Set((locals ?? []).map((l) => l.name));
+    let imported = 0;
+    for (const [name, remote] of byName) {
+      if (localNames.has(name)) continue;
+      const mapped = mapStatus(remote.status);
+      const nowIso = new Date().toISOString();
+      const { error: insErr } = await admin.from('templates').insert({
+        org_id: orgId,
+        name,
+        category: 'marketing',
+        language: 'pt_BR',
+        status: mapped,
+        meta_template_id: remote.id ?? null,
+        meta_template_status: remote.status ?? null,
+        body: '',
+        header_type: 'none',
+        buttons: '[]',
+        variables: '{}',
+        ...(mapped === 'approved' ? { approved_at: nowIso } : {}),
+      });
+      if (!insErr) imported++;
+    }
+
+    return jsonResponse({ ok: true, checked: byName.size, updated, approved, rejected, imported });
   } catch (err) {
     if (err instanceof AuthError) {
       return jsonResponse({ ok: false, error: err.message }, { status: err.status });

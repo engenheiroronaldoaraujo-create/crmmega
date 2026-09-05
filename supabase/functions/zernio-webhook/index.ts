@@ -526,12 +526,32 @@ async function handleTemplateStatus(
         ? 'rejected'
         : 'pending';
 
+  // Tenta atualizar template existente (match por meta_template_id ou name).
   const update: Record<string, unknown> = { meta_template_status: rawStatus || null, status: mapped };
   if (mapped === 'approved') update.approved_at = new Date().toISOString();
 
   let query = admin.from('templates').update(update).eq('org_id', orgId);
   query = metaTemplateId ? query.eq('meta_template_id', metaTemplateId) : query.eq('name', name as string);
-  await query;
+  const { count } = await query.select('id', { count: 'exact', head: true });
+
+  // Se nenhum template local foi afetado, importa um registro mínimo da Meta.
+  if (!count || count === 0) {
+    if (!name) return;
+    await admin.from('templates').insert({
+      org_id: orgId,
+      name,
+      category: 'marketing',
+      language: 'pt_BR',
+      status: mapped,
+      meta_template_id: metaTemplateId ?? null,
+      meta_template_status: rawStatus || null,
+      body: '',
+      header_type: 'none',
+      buttons: '[]',
+      variables: '{}',
+      ...(mapped === 'approved' ? { approved_at: new Date().toISOString() } : {}),
+    });
+  }
 }
 
 // whatsapp.number.* → re-resolve e cacheia o status do numero (tier/qualidade/
