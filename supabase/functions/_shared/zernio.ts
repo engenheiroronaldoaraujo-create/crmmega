@@ -459,6 +459,68 @@ export async function bulkCreateContacts(input: {
   });
 }
 
+export interface ZernioContactRef {
+  id: string;
+  name: string | null;
+  platformIdentifier: string | null;
+}
+
+// GET /contacts — lista contatos do Zernio, paginado (skip/limit). Indexado
+// por platformIdentifier digits-only. O `name` na resposta pode ser fallback
+// do telefone quando o contato foi auto-criado sem nome.
+export async function mapZernioContactsByPhone(input: {
+  apiKey: string;
+  maxPages?: number;
+}): Promise<Map<string, ZernioContactRef>> {
+  const MAX_PAGES = input.maxPages ?? 25;
+  const out = new Map<string, ZernioContactRef>();
+  const limit = 100;
+  let skip = 0;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const res = await zfetch(input.apiKey, `/contacts?limit=${limit}&skip=${skip}`);
+    const root = (res ?? {}) as Record<string, unknown>;
+    const list = Array.isArray(root.contacts) ? root.contacts : [];
+    for (const c of list as Record<string, unknown>[]) {
+      const id = pickString(c, ['id', '_id']);
+      if (!id) continue;
+      const identifier = pickString(c, ['platformIdentifier']);
+      const ref: ZernioContactRef = {
+        id,
+        name: pickString(c, ['name']),
+        platformIdentifier: identifier,
+      };
+      if (identifier) out.set(identifier.replace(/\D/g, ''), ref);
+    }
+    const pagination = root.pagination && typeof root.pagination === 'object'
+      ? (root.pagination as Record<string, unknown>)
+      : null;
+    const hasMore = pagination ? Boolean(pagination.hasMore) : false;
+    if (!hasMore || list.length === 0) break;
+    skip += list.length;
+  }
+  return out;
+}
+
+// PATCH /contacts/:id — atualiza campos do contato (confirmado contra a API).
+export async function updateZernioContact(input: {
+  apiKey: string;
+  contactId: string;
+  name?: string;
+}): Promise<void> {
+  await zfetch(input.apiKey, `/contacts/${encodeURIComponent(input.contactId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ...(input.name !== undefined ? { name: input.name } : {}) }),
+  });
+}
+
+// True quando o nome do contato Zernio é placeholder (vazio ou o próprio
+// telefone) — sinal de que precisa ser reparado antes de um broadcast com
+// { field: 'name' }.
+export function isPhoneLikeName(name: string | null | undefined, digits: string): boolean {
+  if (!name || name.trim() === '') return true;
+  return name.replace(/\D/g, '') === digits;
+}
+
 // POST /broadcasts/{id}/schedule — agenda envio futuro.
 export async function scheduleBroadcast(input: {
   apiKey: string;

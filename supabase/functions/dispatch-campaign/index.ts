@@ -574,11 +574,60 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // ---- Caminho DIRETO (1:1) — variaveis de negocio por destinatario ----
+      // ---- Roteamento DIRETO vs BROADCAST ---------------------------------
+      // DIRETO (1:1): deal_field (sempre) e variáveis de nome para contatos
+      // que JÁ têm conversa no Zernio — o nome é resolvido localmente, sem
+      // depender do contato Zernio (preexistente sem nome faz o broadcast
+      // falhar com "Parameter name is missing or empty"; o bulk não atualiza).
+      // BROADCAST: contatos frios — criar conversa exige texto puro e a Meta
+      // rejeita início de conversa sem template; o broadcast não precisa de
+      // conversa e o bulkCreateContacts cria o contato já com nome.
       const directVarCount = countVariables(template.body);
-      if (usesDealFields(c.variable_mapping, directVarCount)) {
-        // Teto menor por tick: devolve o excedente para o proximo tick.
-        const batch = groupRows.slice(0, DIRECT_PER_TICK);
+      const isDealDirect = usesDealFields(c.variable_mapping, directVarCount);
+      const { components, variableMapping, missing, needsName, nameFallback } =
+        buildBroadcastComponents(template, c.variable_mapping);
+
+      // Guarda de variáveis sem valor — aplica ao caminho broadcast (o direto
+      // resolve localmente e ignora variableMapping).
+      if (!isDealDirect && missing.length > 0) {
+        const msg = `Variaveis sem valor: ${missing.map((i) => `{{${i}}}`).join(', ')}. Em campanhas, cada variavel precisa de um valor fixo ou do nome do contato.`;
+        await releaseOrFail(msg, false);
+        errors.push(`campaign ${c.id}: ${msg}`);
+        continue;
+      }
+
+      // Conversas locais + existentes no Zernio (1 listagem por tick cobre o
+      // grupo inteiro). Sem a listagem, tudo vai para o broadcast (seguro).
+      const groupContactIds = groupRows.map((r) => r.contact_id);
+      const { data: convRows } = await admin
+        .from('conversations')
+        .select('id, contact_id, zernio_conversation_id')
+        .eq('org_id', c.org_id)
+        .in('contact_id', groupContactIds);
+      const convByContact = new Map<string, { id: string; zernio_conversation_id: string | null }>();
+      for (const row of (convRows ?? []) as Array<{ id: string; contact_id: string; zernio_conversation_id: string | null }>) {
+        convByContact.set(row.contact_id, { id: row.id, zernio_conversation_id: row.zernio_conversation_id });
+      }
+      const zernioConvByPhone = await mapInboxConversationsByPhone({
+        apiKey: ctx.apiKey,
+        accountId: ctx.accountId,
+        maxPages: 5,
+      }).catch(() => new Map<string, string>());
+      const hasZernioConv = (r: CampaignContactRow): boolean => {
+        const local = convByContact.get(r.contact_id);
+        if (local?.zernio_conversation_id) return true;
+        const phone = phoneById.get(r.contact_id);
+        return !!phone && zernioConvByPhone.has(phone.replace(/\D/g, ''));
+      };
+
+      // Split direto/broadcast por grupo de template.
+      let directRows: CampaignContactRow[] = [];
+      let broadcastRows: CampaignContactRow[] = groupRows;
+      let preFiltered = false;
+      const effectiveNameById = new Map<string, string>();
+
+      if (isDealDirect) {
+        directRows = groupRows.slice(0, DIRECT_PER_TICK);
         const overflow = groupRows.slice(DIRECT_PER_TICK);
         if (overflow.length > 0) {
           await admin
@@ -586,34 +635,59 @@ Deno.serve(async (req) => {
             .update({ claimed_at: null })
             .in('id', overflow.map((r) => r.id));
         }
+        broadcastRows = [];
+      } else if (needsName) {
+        // Filtro compartilhado telefone/nome antes do split.
+        const sendableAll: CampaignContactRow[] = [];
+        const noPhone: CampaignContactRow[] = [];
+        const noName: CampaignContactRow[] = [];
+        for (const r of groupRows) {
+          const name = nameById.get(r.contact_id) ?? nameFallback;
+          if (!phoneById.get(r.contact_id)) {
+            noPhone.push(r);
+          } else if (!name) {
+            noName.push(r);
+          } else {
+            effectiveNameById.set(r.contact_id, name);
+            sendableAll.push(r);
+          }
+        }
+        if (noPhone.length > 0) {
+          await admin
+            .from('campaign_contacts')
+            .update({ status: 'failed', claimed_at: null, error_message: 'Contato sem telefone' })
+            .in('id', noPhone.map((r) => r.id));
+          campaignFailed += noPhone.length;
+        }
+        if (noName.length > 0) {
+          await admin
+            .from('campaign_contacts')
+            .update({ status: 'failed', claimed_at: null, error_message: 'Contato sem nome e a campanha nao definiu fallback (o template usa a variavel Nome do contato)' })
+            .in('id', noName.map((r) => r.id));
+          campaignFailed += noName.length;
+        }
+        // Com conversa Zernio → direto (teto por tick; excedente volta ao
+        // pending). Sem conversa → broadcast (bulk cria o contato com nome).
+        const withConv = sendableAll.filter(hasZernioConv);
+        directRows = withConv.slice(0, DIRECT_PER_TICK);
+        const directOverflow = withConv.slice(DIRECT_PER_TICK);
+        if (directOverflow.length > 0) {
+          await admin
+            .from('campaign_contacts')
+            .update({ claimed_at: null })
+            .in('id', directOverflow.map((r) => r.id));
+        }
+        broadcastRows = sendableAll.filter((r) => !hasZernioConv(r));
+        preFiltered = true;
+      }
 
+      // ---- Caminho DIRETO (1:1) -------------------------------------------
+      if (directRows.length > 0) {
+        const batch = directRows;
         const batchContactIds = batch.map((r) => r.contact_id);
-        const dealByContact = await loadDealData(admin, c.org_id, batchContactIds);
-        const { data: convRows } = await admin
-          .from('conversations')
-          .select('id, contact_id, zernio_conversation_id')
-          .eq('org_id', c.org_id)
-          .in('contact_id', batchContactIds);
-        const convByContact = new Map<string, { id: string; zernio_conversation_id: string | null }>();
-        for (const row of (convRows ?? []) as Array<{ id: string; contact_id: string; zernio_conversation_id: string | null }>) {
-          convByContact.set(row.contact_id, { id: row.id, zernio_conversation_id: row.zernio_conversation_id });
-        }
-
-        // Conversas já existentes no Zernio (1 listagem cobre o lote). A
-        // CRIAÇÃO de conversa exige message — sem resolver antes, contatos com
-        // conversa Zernio já criada (inbound/broadcast anterior) falham em loop
-        // com "Message, attachment, or template is required".
-        let zernioConvByPhone = new Map<string, string>();
-        try {
-          zernioConvByPhone = await mapInboxConversationsByPhone({
-            apiKey: ctx.apiKey,
-            accountId: ctx.accountId,
-            maxPages: 5,
-          });
-        } catch {
-          // Sem a lista, cai no createInboxConversation como antes (pode falhar
-          // para contatos já conhecidos — aceitável como degradação).
-        }
+        const dealByContact = isDealDirect
+          ? await loadDealData(admin, c.org_id, batchContactIds)
+          : new Map<string, DealData>();
 
         await withConcurrency(batch, DIRECT_CONCURRENCY, async (r) => {
           const phone = phoneById.get(r.contact_id);
@@ -750,62 +824,51 @@ Deno.serve(async (req) => {
             if (!retryable) campaignFailed += 1;
           }
         });
-        continue;
-      }
-      // ---- Caminho BROADCAST (nome / valor fixo) --------------------------
-
-      const { components, variableMapping, missing, needsName, nameFallback } =
-        buildBroadcastComponents(template, c.variable_mapping);
-      if (missing.length > 0) {
-        // Guarda defensiva: nunca disparar com variavel em branco. Marca a linha
-        // failed com motivo legivel em vez de virar "sent" e a mensagem sumir.
-        const msg = `Variaveis sem valor: ${missing.map((i) => `{{${i}}}`).join(', ')}. Em campanhas, cada variavel precisa de um valor fixo ou do nome do contato.`;
-        await releaseOrFail(msg, false);
-        errors.push(`campaign ${c.id}: ${msg}`);
-        continue;
       }
 
-      // Linhas enviaveis: precisam de telefone e — quando o template usa a
-      // variavel de nome — de nome no contato (senao o Zernio resolveria o
-      // placeholder vazio e a Meta rejeitaria a mensagem em silencio). Se a
-      // variavel tem fallback, contatos sem nome usam o fallback como nome
-      // efetivo (importado no Zernio abaixo) em vez de falhar.
-      const effectiveNameById = new Map<string, string>();
-      const sendable: CampaignContactRow[] = [];
-      const noPhone: CampaignContactRow[] = [];
-      const noName: CampaignContactRow[] = [];
-      for (const r of groupRows) {
-        const name = nameById.get(r.contact_id) ?? nameFallback;
-        if (!phoneById.get(r.contact_id)) {
-          noPhone.push(r);
-        } else if (needsName && !name) {
-          noName.push(r);
-        } else {
-          if (name) effectiveNameById.set(r.contact_id, name);
-          sendable.push(r);
+      // ---- Caminho BROADCAST ----------------------------------------------
+      if (broadcastRows.length > 0) {
+        let sendable = broadcastRows;
+        if (!preFiltered) {
+          // Filtro de linhas enviáveis (broadcast puro: nome/valor fixo).
+          const noPhone: CampaignContactRow[] = [];
+          const noName: CampaignContactRow[] = [];
+          sendable = [];
+          for (const r of groupRows) {
+            const name = nameById.get(r.contact_id) ?? nameFallback;
+            if (!phoneById.get(r.contact_id)) {
+              noPhone.push(r);
+            } else if (needsName && !name) {
+              noName.push(r);
+            } else {
+              if (name) effectiveNameById.set(r.contact_id, name);
+              sendable.push(r);
+            }
+          }
+          if (noPhone.length > 0) {
+            await admin
+              .from('campaign_contacts')
+              .update({ status: 'failed', claimed_at: null, error_message: 'Contato sem telefone' })
+              .in('id', noPhone.map((r) => r.id));
+            campaignFailed += noPhone.length;
+          }
+          if (noName.length > 0) {
+            await admin
+              .from('campaign_contacts')
+              .update({ status: 'failed', claimed_at: null, error_message: 'Contato sem nome e a campanha nao definiu fallback (o template usa a variavel Nome do contato)' })
+              .in('id', noName.map((r) => r.id));
+            campaignFailed += noName.length;
+          }
+          if (sendable.length === 0) continue;
         }
-      }
-      if (noPhone.length > 0) {
-        await admin
-          .from('campaign_contacts')
-          .update({ status: 'failed', claimed_at: null, error_message: 'Contato sem telefone' })
-          .in('id', noPhone.map((r) => r.id));
-        campaignFailed += noPhone.length;
-      }
-      if (noName.length > 0) {
-        await admin
-          .from('campaign_contacts')
-          .update({ status: 'failed', claimed_at: null, error_message: 'Contato sem nome e a campanha nao definiu fallback (o template usa a variavel Nome do contato)' })
-          .in('id', noName.map((r) => r.id));
-        campaignFailed += noName.length;
-      }
-      if (sendable.length === 0) continue;
-      const phones = sendable.map((r) => phoneById.get(r.contact_id) as string);
+        const phones = sendable.map((r) => phoneById.get(r.contact_id) as string);
 
-      try {
-        // Com variavel de nome: importa os contatos no Zernio ANTES dos
-        // recipients, para que os auto-criados ja tenham nome (o Zernio resolve
-        // { field:'name' } a partir do contato dele, nao do nosso banco).
+        try {
+        // Com variavel de nome: importa os contatos novos no Zernio ANTES dos
+        // recipients (o Zernio resolve { field:'name' } a partir do contato
+        // dele). Contatos preexistentes com nome placeholder são reparados
+        // pela function repair-names (fora do tick — o listing+PATCHs de todos
+        // os contatos estoura o wall-clock da Edge Function).
         if (needsName) {
           // platformIdentifier em DIGITS-ONLY: o Zernio indexa contatos assim
           // ("5515996575288"); enviar com '+' cria contato duplicado e o
@@ -867,6 +930,7 @@ Deno.serve(async (req) => {
         // So as linhas enviaveis: as sem telefone/nome ja foram marcadas failed.
         await releaseOrFail(retryable ? `Tentando novamente: ${msg}` : msg, retryable, sendable);
         errors.push(`campaign ${c.id}: broadcast: ${msg}`);
+      }
       }
     }
 

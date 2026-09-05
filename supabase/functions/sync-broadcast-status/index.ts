@@ -192,13 +192,17 @@ Deno.serve(async (req) => {
 
       if (next === 'failed') {
         const reason = rec.error ?? 'Broadcast recipient failed';
-        // UPDATE condicional: so marca failed se o status atual ainda e sent/delivered.
-        // Isso evita double-count quando dois ticks concorrentes processam a mesma linha.
+        // UPDATE condicional: só marca failed se o status atual ainda é
+        // sent/delivered E a linha ainda aponta para ESTE broadcast. Sem o
+        // guard de broadcast, uma linha reenviada em broadcast posterior
+        // (entregue!) é marcada failed com dados velhos — falso falha + reenvio
+        // duplicado.
         const { error, data: updatedRows } = await admin
           .from('campaign_contacts')
           .update({ status: 'failed', error_message: reason })
           .eq('id', row.id)
           .in('status', ['sent', 'delivered'])
+          .eq('zernio_broadcast_id', broadcastId)
           .select('id');
         if (error) {
           errors.push(`update ${row.id}: ${error.message}`);
@@ -228,13 +232,15 @@ Deno.serve(async (req) => {
         patch.read_at = nowIso;
         if (!row.delivered_at) patch.delivered_at = nowIso;
       }
-      // UPDATE condicional: so avanca se o status atual ainda e anterior ao desejado.
-      // Isso evita double-count quando dois ticks concorrentes processam a mesma linha.
+      // UPDATE condicional: só avança se o status atual ainda é anterior ao
+      // desejado E a linha ainda aponta para ESTE broadcast (linha reenviada
+      // em broadcast posterior não recebe dado do broadcast antigo).
       const { error, data: updatedRows } = await admin
         .from('campaign_contacts')
         .update(patch)
         .eq('id', row.id)
         .eq('status', row.status)
+        .eq('zernio_broadcast_id', broadcastId)
         .select('id');
       if (error) {
         errors.push(`update ${row.id}: ${error.message}`);
@@ -262,13 +268,15 @@ Deno.serve(async (req) => {
     for (const row of stuckRows) {
       const phone = contactPhone(row);
       if (phone && byPhone.has(onlyDigits(phone))) continue; // Zernio tem info — já processado ou em fila
-      const { count } = await admin
+      // Guard de broadcast: linha reenviada em broadcast posterior não expira.
+      const { data: updatedRows } = await admin
         .from('campaign_contacts')
         .update({ status: 'failed', error_message: 'Timeout: Zernio não retornou status em 48h' })
         .eq('id', row.id)
         .eq('status', 'sent')
-        .select('id', { count: 'exact', head: true });
-      if (count && count > 0) {
+        .eq('zernio_broadcast_id', broadcastId)
+        .select('id');
+      if (updatedRows && updatedRows.length > 0) {
         await admin
           .from('messages')
           .update({ meta_status: 'failed', error_reason: 'Timeout: Zernio não retornou status em 48h' })
