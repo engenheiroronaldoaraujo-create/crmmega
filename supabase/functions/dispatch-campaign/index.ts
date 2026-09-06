@@ -730,8 +730,14 @@ Deno.serve(async (req) => {
               await admin.from('conversations').update({ last_message_at: sentAt }).eq('id', localConvId);
             }
           } catch (err) {
-            const retryable = err instanceof ZernioError && (err.status === 429 || err.status >= 500);
+            // Retriável: 429/5xx E rejeições intermitentes de parâmetro da
+            // Zernio ("Parameter name is missing or empty" falha para alguns
+            // contatos e passa para outros com o MESMO payload — retentar é
+            // seguro; o fail-safe limita o loop se for permanente).
             const msg = err instanceof Error ? err.message : 'Erro no envio';
+            const retryable =
+              (err instanceof ZernioError && (err.status === 429 || err.status >= 500)) ||
+              /parameter name is missing/i.test(msg);
             await admin
               .from('campaign_contacts')
               .update(
