@@ -15,7 +15,6 @@ import { requireAdmin } from '../_shared/auth.ts';
 import { getAdminClient } from '../_shared/supabase-admin.ts';
 import { jsonResponse, preflight } from '../_shared/cors.ts';
 import {
-  isPhoneLikeName,
   mapZernioContactsByPhone,
   updateZernioContact,
   type ZernioContactRef,
@@ -27,6 +26,17 @@ const PATCH_BUDGET = 50;
 
 function normalizeDigits(p: string): string {
   return p.replace(/\D/g, '');
+}
+
+// Placeholder = vazio OU qualquer nome com cara de telefone (10-14 dígitos,
+// com +/espaços/traços/parênteses). O Zernio auto-cria contatos com o
+// telefone como nome; um nome que é outro telefone (ex.: o número original
+// do lead) também não serve como {{nome}}.
+const PHONE_LIKE = /^\+?[\d\s\-\(\)]{8,20}$/;
+
+function isPlaceholderName(name: string | null | undefined): boolean {
+  if (!name || name.trim() === '') return true;
+  return PHONE_LIKE.test(name.trim()) && normalizeDigits(name).length >= 8;
 }
 
 Deno.serve(async (req) => {
@@ -69,25 +79,53 @@ Deno.serve(async (req) => {
     }
 
     // 3. Candidatos: contato Zernio com nome placeholder E nome local disponível.
-    const candidates: Array<{ ref: ZernioContactRef; name: string }> = [];
-    for (const [digits, ref] of zernioContacts) {
-      const localName = localNameByPhone.get(digits);
-      if (!localName) continue;
-      if (isPhoneLikeName(ref.name, digits)) {
-        candidates.push({ ref, name: localName });
+    // Contatos INEXISTENTES no Zernio também são candidatos — o envio 1:1 via
+    // sendTemplateToPhone falha ("Parameter name is missing or empty") quando
+    // o contato não existe: criamos via bulk com o nome.
+    const candidates: Array<{ ref: ZernioContactRef | null; digits: string; name: string }> = [];
+    for (const [digits, localName] of localNameByPhone) {
+      const ref = zernioContacts.get(digits) ?? null;
+      if (!ref || isPlaceholderName(ref.name)) {
+        candidates.push({ ref, digits, name: localName });
       }
     }
 
     const totalCandidates = candidates.length;
     const batch = candidates.slice(0, PATCH_BUDGET);
+    const toCreate = batch.filter((c) => !c.ref);
+    const toPatch = batch.filter((c) => c.ref);
     let repaired = 0;
     const errors: string[] = [];
-    for (const c of batch) {
+
+    // Inexistentes no Zernio: cria em lote (bulk aceita até 1000 por chamada,
+    // digits-only identifier para casar com o índice interno da Zernio).
+    if (toCreate.length > 0) {
       try {
-        await updateZernioContact({ apiKey: ctx.apiKey, contactId: c.ref.id, name: c.name });
+        const { bulkCreateContacts } = await import('../_shared/zernio.ts');
+        for (const part of chunkItems(
+          toCreate.map((c) => ({ name: c.name, platformIdentifier: c.digits })),
+          500,
+        )) {
+          await bulkCreateContacts({
+            apiKey: ctx.apiKey,
+            profileId: ctx.profileId!,
+            accountId: ctx.accountId,
+            contacts: part,
+          });
+          repaired += part.length;
+        }
+      } catch (err) {
+        errors.push(`bulk: ${err instanceof Error ? err.message : 'erro'}`);
+      }
+    }
+
+    // Existentes com nome placeholder: PATCH individual (bulk não atualiza).
+    for (const c of toPatch) {
+      try {
+        await updateZernioContact({ apiKey: ctx.apiKey, contactId: c.ref!.id, name: c.name });
         repaired++;
       } catch (err) {
-        errors.push(`${c.ref.platformIdentifier}: ${err instanceof Error ? err.message : 'erro'}`);
+        errors.push(`${c.digits}: ${err instanceof Error ? err.message : 'erro'}`);
       }
       // Pausa entre PATCHes: a Meta aplica rate limit por rajada.
       await new Promise((r) => setTimeout(r, 1200));
@@ -108,3 +146,9 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: false, error: err instanceof Error ? err.message : 'Erro interno' }, { status: 500 });
   }
 });
+
+function chunkItems<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}

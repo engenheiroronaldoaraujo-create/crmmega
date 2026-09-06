@@ -844,6 +844,22 @@ Deno.serve(async (req) => {
         .update({ consecutive_errors: 0, last_error: null })
         .eq('id', c.id);
     } else {
+      // Tick sem progresso: só pune se havia algo RECLAMÁVEL. Com o pacing
+      // (ticks de ~50s vs cron de 30s) ticks sobrepostos não reclamam nada —
+      // o tick anterior ainda processa as linhas. Punir aqui dispararia o
+      // fail-safe em cadeia sem nenhum erro real.
+      const { count: inFlight } = await admin
+        .from('campaign_contacts')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', c.id)
+        .eq('status', 'pending')
+        .not('claimed_at', 'is', null)
+        .gte('claimed_at', new Date(Date.now() - 2 * 60 * 1000).toISOString());
+      if ((inFlight ?? 0) > 0) {
+        totalSent += campaignSent;
+        totalFailed += campaignFailed;
+        continue;
+      }
       const newCount = c.consecutive_errors + 1;
       const lastErr = c.last_error ?? 'sem detalhes';
       if (newCount >= MAX_CONSECUTIVE_ERRORS) {
