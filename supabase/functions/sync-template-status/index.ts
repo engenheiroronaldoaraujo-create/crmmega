@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
     // templates DA ORG do caller.
     const { data: locals, error } = await admin
       .from('templates')
-      .select('id, name, status, body')
+      .select('id, name, status, body, variables')
       .eq('org_id', orgId);
     if (error) return jsonResponse({ ok: false, error: error.message }, { status: 500 });
 
@@ -119,16 +119,19 @@ Deno.serve(async (req) => {
         const local = (locals ?? []).find((l) => l.name === name);
         if (local && remote.body) {
           const hasNamedVars = /\{\{\s*[a-zA-Z_]\w*\s*\}\}/.test(local.body) && !/\{\{\s*\d+\s*\}\}/.test(local.body);
-          if (!local.body || hasNamedVars) {
-            const normalized = normalizeBodyVariables(remote.body);
-            if (normalized !== local.body) {
-              const patch: Record<string, unknown> = { body: normalized };
-              if (remote.category) patch.category = remote.category.toLowerCase();
-              if (remote.language) patch.language = remote.language;
-              if (remote.headerType) patch.header_type = remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none';
-              await admin.from('templates').update(patch).eq('id', local.id);
-              patched++;
-            }
+          const wantVars = Object.keys(remote.paramNames).length > 0 ? remote.paramNames : {};
+          const localVars = (local.variables ?? {}) as Record<string, string>;
+          const varsDiffer = JSON.stringify(wantVars) !== JSON.stringify(localVars);
+          if (!local.body || hasNamedVars || varsDiffer) {
+            const normalized = hasNamedVars || !local.body ? normalizeBodyVariables(remote.body) : local.body;
+            const patch: Record<string, unknown> = {};
+            if (normalized !== local.body) patch.body = normalized;
+            if (remote.category) patch.category = remote.category.toLowerCase();
+            if (remote.language) patch.language = remote.language;
+            if (remote.headerType) patch.header_type = remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none';
+            patch.variables = wantVars;
+            await admin.from('templates').update(patch).eq('id', local.id);
+            patched++;
           }
         }
         continue;
@@ -144,7 +147,7 @@ Deno.serve(async (req) => {
         body: remote.body ? normalizeBodyVariables(remote.body) : '',
         header_type: remote.headerType === 'TEXT' ? 'text' : remote.headerType === 'IMAGE' ? 'image' : remote.headerType === 'VIDEO' ? 'video' : 'none',
         buttons: '[]',
-        variables: '{}',
+        variables: Object.keys(remote.paramNames).length > 0 ? remote.paramNames : {},
         ...(mapped === 'approved' ? { approved_at: nowIso } : {}),
       });
       if (!insErr) imported++;

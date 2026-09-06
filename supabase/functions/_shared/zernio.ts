@@ -224,6 +224,49 @@ export async function createInboxConversation(input: {
   };
 }
 
+export interface TemplatePhoneResult {
+  conversationId: string | null;
+  messageId: string | null;
+}
+
+// POST /inbox/conversations com template — inicia (ou reabre) a conversa
+// enviando um template aprovado para um telefone. Cria a conversa quando não
+// existe (o WhatsApp exige template para iniciar conversa; texto livre é
+// rejeitado). O header de mídia é preenchido automaticamente pela Zernio a
+// partir da definição aprovada do template. Os valores das variáveis são
+// locais (templateParams, ordem do template) — determinístico por
+// destinatário, ao contrário do broadcast (variableMapping da Zernio não
+// resolve e a mensagem sai com o placeholder literal).
+// Doc: "Provide templateName, templateLanguage, and templateParams ... with
+// the recipient phone in participantId."
+export async function sendTemplateToPhone(input: {
+  apiKey: string;
+  accountId: string;
+  participantId: string; // E.164
+  templateName: string;
+  templateLanguage: string;
+  templateParams: string[];
+}): Promise<TemplatePhoneResult> {
+  const res = await zfetch(input.apiKey, '/inbox/conversations', {
+    method: 'POST',
+    body: JSON.stringify({
+      accountId: input.accountId,
+      participantId: input.participantId,
+      templateName: input.templateName,
+      templateLanguage: input.templateLanguage,
+      templateParams: input.templateParams,
+    }),
+  });
+  const data =
+    res && typeof res === 'object' && 'data' in (res as Record<string, unknown>)
+      ? (res as Record<string, unknown>).data
+      : res;
+  return {
+    conversationId: pickString(data, ['conversationId', '_id', 'id']),
+    messageId: pickString(data, ['messageId', 'lastMessageId']),
+  };
+}
+
 export interface InboxConversationSummary {
   id: string;
   accountId: string | null;
@@ -887,6 +930,9 @@ export interface ZernioTemplate {
   body: string | null;
   headerType: string | null;
   headerText: string | null;
+  // Nomes dos parâmetros do body na Meta, por posição ('1' → 'nome').
+  // Vazio = placeholders numerados ({{1}}); preenchido = nomeados ({{nome}}).
+  paramNames: Record<string, string>;
 }
 
 export async function listTemplates(
@@ -915,10 +961,16 @@ export async function listTemplates(
       let bodyText: string | null = null;
       let headerType: string | null = null;
       let headerText: string | null = null;
+      const paramNames: Record<string, string> = {};
       for (const comp of components as Record<string, unknown>[]) {
         const type = String(comp.type ?? '').toUpperCase();
         if (type === 'BODY') {
           bodyText = pickString(comp, ['text', 'body']);
+          const params = Array.isArray(comp.parameters) ? comp.parameters : [];
+          params.forEach((p, idx) => {
+            const name = pickString(p as Record<string, unknown>, ['parameter_name', 'paramName']);
+            if (name) paramNames[String(idx + 1)] = name;
+          });
         } else if (type === 'HEADER') {
           headerType = pickString(comp, ['format']);
           headerText = pickString(comp, ['text']);
@@ -933,6 +985,7 @@ export async function listTemplates(
         body: bodyText,
         headerType: headerType,
         headerText: headerText,
+        paramNames,
       });
     }
     const pagination = root.pagination && typeof root.pagination === 'object'
